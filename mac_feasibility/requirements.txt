@@ -1,0 +1,5 @@
+# Feasibility checks only (Python 3.10+). Agent S's own requirements are unchanged.
+claude-agent-sdk>=0.2.163
+pillow
+pyautogui
+pyobjc-framework-Quartz; platform_system == "Darwin"
