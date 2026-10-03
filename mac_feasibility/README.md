@@ -24,7 +24,8 @@ or if your Max limit is reached.
    claude.ai account and a Max plan.
 2. **Remove API keys from your shell.** The Agent S README tells you to put
    keys in `~/.zshrc`, so look there. Run
-   `env | grep -E 'ANTHROPIC|OPENAI|HF_|GEMINI|OPENROUTER|CLAUDE_CODE_USE|CLAUDE_CODE_OAUTH'`.
+   `env | grep -E 'ANTHROPIC|OPENAI|HF_|GEMINI|OPENROUTER|CLAUDE_CODE_USE|CLAUDE_CODE_OAUTH' | cut -d= -f1`
+   (prints names only, never the secret values).
    For each name it prints, delete its `export` line from `~/.zshrc` and
    open a new terminal. Do the same for a `.env` file in the repo root.
 3. **Optional hard stop on spending.** If "extra usage" is turned on for
@@ -41,8 +42,8 @@ or if your Max limit is reached.
    ```
 6. **Create a separate environment for the checks:**
    ```bash
-   python3.12 -m venv .venv-checks
-   source .venv-checks/bin/activate
+   python3.12 -m venv .venv
+   source .venv/bin/activate
    pip install -r mac_feasibility/requirements.txt
    ```
 7. **Screen Recording permission (check 5 only).** In System Settings >
