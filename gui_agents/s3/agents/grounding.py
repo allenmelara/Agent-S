@@ -21,6 +21,25 @@ class ACI:
         self.notes: List[str] = []
 
 
+def _macos_open_code(name: str) -> str:
+    """Open or bring forward an app (or open a file) on macOS without typing.
+
+    The old Spotlight sequence typed the name straight after Command+Space; if
+    Spotlight was slow or did not open, the text went into whatever app had
+    focus. `open -a` asks macOS directly; a path that exists is opened as a file.
+    If neither works, nothing is typed and the agent sees an unchanged screen.
+    The code must not contain "done", "fail", "next" or "wait": cli_app.py
+    treats those words in action code as control signals.
+    """
+    return (
+        "import os, subprocess, time; "
+        f"_n = {name!r}; _p = os.path.expanduser(_n); "
+        "_r = subprocess.run(['open', _p] if os.path.exists(_p) else ['open', '-a', _n], capture_output=True); "
+        "print('could not open:', _r.stderr.decode().strip()) if _r.returncode else None; "
+        "time.sleep(1.5)"
+    )
+
+
 # Agent action decorator
 def agent_action(func):
     func.is_agent_action = True
@@ -390,7 +409,7 @@ class OSWorldACI(ACI):
             app_code:str the code name of the application to switch to from the provided list of open applications
         """
         if self.platform == "darwin":
-            return f"import pyautogui; import time; pyautogui.hotkey('command', 'space', interval=0.5); pyautogui.typewrite({repr(app_code)}); pyautogui.press('enter'); time.sleep(1.0)"
+            return _macos_open_code(app_code)
         elif self.platform == "linux":
             return UBUNTU_APP_SETUP.replace("APP_NAME", app_code)
         elif self.platform == "windows":
@@ -409,7 +428,7 @@ class OSWorldACI(ACI):
         if self.platform == "linux":
             return f"import pyautogui; import time; pyautogui.hotkey('win'); time.sleep(0.5); pyautogui.write({repr(app_or_filename)}); time.sleep(1.0); pyautogui.hotkey('enter'); time.sleep(0.5)"
         elif self.platform == "darwin":
-            return f"import pyautogui; import time; pyautogui.hotkey('command', 'space', interval=0.5); pyautogui.typewrite({repr(app_or_filename)}); pyautogui.press('enter'); time.sleep(1.0)"
+            return _macos_open_code(app_or_filename)
         elif self.platform == "windows":
             return (
                 "import pyautogui; import time; "

@@ -188,6 +188,36 @@ class TestGroundingCache(GuardBypass):
         self.assertEqual(len(calls), 2)  # one per distinct screenshot
 
 
+class TestMacOpen(unittest.TestCase):
+    def run_code(self, name, exists):
+        from gui_agents.s3.agents.grounding import _macos_open_code
+
+        code = _macos_open_code(name)
+        for word in ("done", "fail", "next", "wait", "typewrite", "hotkey"):
+            self.assertNotIn(word, code.lower())  # control words / blind typing
+        calls = []
+
+        class Result:
+            returncode, stderr = 0, b""
+
+        with patch("subprocess.run", lambda argv, **kw: calls.append(argv) or Result()), patch(
+            "os.path.exists", return_value=exists
+        ), patch("time.sleep"):
+            exec(code, {})
+        return calls
+
+    def test_app_opens_with_open_a(self):
+        self.assertEqual(self.run_code("Calculator", exists=False), [["open", "-a", "Calculator"]])
+
+    def test_existing_path_opens_as_file(self):
+        calls = self.run_code("~/Desktop/report.pdf", exists=True)
+        self.assertEqual(calls[0][0], "open")
+        self.assertTrue(calls[0][1].endswith("Desktop/report.pdf"))
+
+    def test_quotes_in_name_are_safe(self):
+        self.assertEqual(self.run_code("Bob's App", exists=False), [["open", "-a", "Bob's App"]])
+
+
 class TestGuard(unittest.TestCase):
     def setUp(self):
         cs._guard_passed = False

@@ -139,16 +139,34 @@ logger.addHandler(sdebug_handler)
 platform_os = platform.system()
 
 
+def _frontmost_app_path():
+    """Bundle path of the app in front on macOS, or None if unavailable."""
+    try:
+        from AppKit import NSWorkspace
+
+        app = NSWorkspace.sharedWorkspace().frontmostApplication()
+        return app.bundleURL().path() if app and app.bundleURL() else None
+    except Exception:
+        return None
+
+
 def show_permission_dialog(code: str, action_description: str):
     """Show a platform-specific permission dialog and return True if approved."""
     if platform.system() == "Darwin":
+        front = _frontmost_app_path()
         text = f"Do you want to execute this action?\n\n{code}\n\nwhich will try to {action_description}"
         text = text[:1500].replace("\\", "\\\\").replace('"', '\\"')
         script = (
             f'display dialog "{text}" with title "Action Permission" '
             'buttons {"Cancel", "OK"} default button "Cancel" cancel button "Cancel"'
         )
-        return subprocess.run(["osascript", "-e", script], capture_output=True).returncode == 0
+        approved = subprocess.run(["osascript", "-e", script], capture_output=True).returncode == 0
+        if approved and front:
+            # The dialog took focus; give it back so typing and hotkeys reach
+            # the app that was in front when the screenshot was taken.
+            subprocess.run(["open", "-a", front], capture_output=True)
+            time.sleep(0.7)
+        return approved
     elif platform.system() == "Linux":
         result = os.system(
             f'zenity --question --title="Action Permission" --text="Do you want to execute this action?\n\n{code}" --width=400 --height=200'

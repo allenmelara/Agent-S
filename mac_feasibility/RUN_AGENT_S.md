@@ -85,8 +85,12 @@ and after a task to see what it really costs.
 - **A new session per call.** The ~1.3 s/call saving from a persistent
   session is not used yet. It will be added only if check 3 shows `/clear`
   really drops history.
-- **The dialog takes focus.** It briefly takes focus from the target app.
-  Agent S usually clicks a field before typing; watch for typing that goes
-  to the wrong window.
+- **The dialog takes focus.** After you click OK, the app that was in front
+  before the dialog is brought back. Still watch for typing that lands in
+  the wrong window.
+- **Opening apps.** On macOS, "open app" and "switch app" now use
+  `subprocess.run(['open', '-a', '<App>'])`. That's macOS's own launcher,
+  and it never types. The old Spotlight sequence typed the app name blindly;
+  in the first real run it typed into the Claude app.
 - **The billing guard checks two places.** It looks at `.claude/settings`
   in the folder you run from and in your home folder.
