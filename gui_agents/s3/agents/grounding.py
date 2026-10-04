@@ -228,6 +228,18 @@ class OSWorldACI(ACI):
 
     # Given the state and worker's referring expression, use the grounding model to generate (x,y)
     def generate_coords(self, ref_expr: str, obs: Dict) -> List[int]:
+        # The worker's CODE_VALID_FORMATTER evaluates each action once to check
+        # it, then again to run it; reuse the answer for the same screenshot.
+        shot_key = hash(obs["screenshot"])
+        if getattr(self, "_coords_cache_shot", None) != shot_key:
+            self._coords_cache_shot, self._coords_cache = shot_key, {}
+        if ref_expr in self._coords_cache:
+            return list(self._coords_cache[ref_expr])
+        coords = self._generate_coords_uncached(ref_expr, obs)
+        self._coords_cache[ref_expr] = coords
+        return list(coords)
+
+    def _generate_coords_uncached(self, ref_expr: str, obs: Dict) -> List[int]:
 
         # Reset the grounding model state
         self.grounding_model.reset()

@@ -6,6 +6,7 @@ import os
 import platform
 import pyautogui
 import signal
+import subprocess
 import sys
 import time
 
@@ -13,6 +14,14 @@ from PIL import Image
 
 from gui_agents.s3.agents.grounding import OSWorldACI
 from gui_agents.s3.agents.agent_s import AgentS3
+from gui_agents.s3.core.claude_subscription import (
+    GROUNDING_SYSTEM_PROMPT,
+    SubscriptionStop,
+    ensure_subscription_only,
+    is_local_url,
+    set_call_budget,
+    usage_summary,
+)
 from gui_agents.s3.utils.local_env import LocalEnv
 
 current_platform = platform.system().lower()
@@ -133,10 +142,13 @@ platform_os = platform.system()
 def show_permission_dialog(code: str, action_description: str):
     """Show a platform-specific permission dialog and return True if approved."""
     if platform.system() == "Darwin":
-        result = os.system(
-            f'osascript -e \'display dialog "Do you want to execute this action?\n\n{code} which will try to {action_description}" with title "Action Permission" buttons {{"Cancel", "OK"}} default button "OK" cancel button "Cancel"\''
+        text = f"Do you want to execute this action?\n\n{code}\n\nwhich will try to {action_description}"
+        text = text[:1500].replace("\\", "\\\\").replace('"', '\\"')
+        script = (
+            f'display dialog "{text}" with title "Action Permission" '
+            'buttons {"Cancel", "OK"} default button "Cancel" cancel button "Cancel"'
         )
-        return result == 0
+        return subprocess.run(["osascript", "-e", script], capture_output=True).returncode == 0
     elif platform.system() == "Linux":
         result = os.system(
             f'zenity --question --title="Action Permission" --text="Do you want to execute this action?\n\n{code}" --width=400 --height=200'
@@ -152,12 +164,19 @@ def scale_screen_dimensions(width: int, height: int, max_dim_size: int):
     return safe_width, safe_height
 
 
-def run_agent(agent, instruction: str, scaled_width: int, scaled_height: int):
+def run_agent(
+    agent,
+    instruction: str,
+    scaled_width: int,
+    scaled_height: int,
+    max_steps: int = 15,
+    confirm_actions: bool = False,
+):
     global paused
     obs = {}
     traj = "Task:\n" + instruction
     subtask_traj = ""
-    for step in range(15):
+    for step in range(max_steps):
         # Check if we're in paused state and wait
         while paused:
             time.sleep(0.1)
@@ -178,10 +197,14 @@ def run_agent(agent, instruction: str, scaled_width: int, scaled_height: int):
         while paused:
             time.sleep(0.1)
 
-        print(f"\n🔄 Step {step + 1}/15: Getting next action from agent...")
+        print(f"\n🔄 Step {step + 1}/{max_steps}: Getting next action from agent...")
 
         # Get next action code from the agent
-        info, code = agent.predict(instruction=instruction, observation=obs)
+        try:
+            info, code = agent.predict(instruction=instruction, observation=obs)
+        except SubscriptionStop as stop:
+            print(f"\n⛔ Stopped: {stop}")
+            break
 
         if "done" in code[0].lower() or "fail" in code[0].lower():
             if platform.system() == "Darwin":
@@ -212,7 +235,18 @@ def run_agent(agent, instruction: str, scaled_width: int, scaled_height: int):
                 time.sleep(0.1)
 
             # Ask for permission before executing
-            exec(code[0])
+            if confirm_actions and not show_permission_dialog(
+                code[0], info.get("executor_plan", "carry out the next step")[:300]
+                if isinstance(info, dict)
+                else "carry out the next step",
+            ):
+                print("🚫 Action declined; stopping this task.")
+                break
+            try:
+                exec(code[0])
+            except SubscriptionStop as stop:  # grounding calls happen inside exec'd code
+                print(f"\n⛔ Stopped: {stop}")
+                break
             time.sleep(1.0)
 
             # Update task and subtask trajectories
@@ -268,8 +302,8 @@ def main():
     parser.add_argument(
         "--ground_url",
         type=str,
-        required=True,
-        help="The URL of the grounding model",
+        default="",
+        help="The URL of the grounding model (not used with claude_subscription)",
     )
     parser.add_argument(
         "--ground_api_key",
@@ -280,20 +314,20 @@ def main():
     parser.add_argument(
         "--ground_model",
         type=str,
-        required=True,
-        help="The model name for the grounding model",
+        default=None,
+        help="The model name for the grounding model (claude_subscription: optional alias, e.g. sonnet)",
     )
     parser.add_argument(
         "--grounding_width",
         type=int,
-        required=True,
-        help="Width of screenshot image after processor rescaling",
+        default=None,
+        help="Width of screenshot image after processor rescaling (claude_subscription: defaults to the screenshot width)",
     )
     parser.add_argument(
         "--grounding_height",
         type=int,
-        required=True,
-        help="Height of screenshot image after processor rescaling",
+        default=None,
+        help="Height of screenshot image after processor rescaling (claude_subscription: defaults to the screenshot height)",
     )
 
     # AgentS3 specific arguments
@@ -316,12 +350,42 @@ def main():
         help="Enable local coding environment for code execution (WARNING: Executes arbitrary code locally)",
     )
     parser.add_argument(
+        "--max_steps",
+        type=int,
+        default=15,
+        help="Maximum agent steps per task",
+    )
+    parser.add_argument(
+        "--max_model_calls",
+        type=int,
+        default=60,
+        help="claude_subscription only: stop a task after this many Claude calls",
+    )
+    parser.add_argument(
+        "--no_confirm",
+        action="store_true",
+        help="claude_subscription only: run actions without a confirmation dialog",
+    )
+    parser.add_argument(
         "--task",
         type=str,
         help="The task instruction for Agent-S3 to perform.",
     )
 
     args = parser.parse_args()
+
+    use_subscription = "claude_subscription" in (args.provider, args.ground_provider)
+    if use_subscription:
+        if args.provider == "claude_subscription" and args.model == parser.get_default("model"):
+            args.model = None  # your Claude Code default model
+        if args.ground_provider != "claude_subscription" and not is_local_url(args.ground_url):
+            parser.error("with claude_subscription, the grounding model must be claude_subscription or a localhost URL")
+        if args.provider != "claude_subscription" or args.model_url or args.model_api_key:
+            parser.error("with claude_subscription, the main model must be claude_subscription, with no --model_url or --model_api_key")
+        if args.enable_local_env:
+            print("⚠️  Local code execution is enabled; generated code runs without the action dialog.")
+    elif args.ground_model is None or args.grounding_width is None or args.grounding_height is None:
+        parser.error("--ground_model, --grounding_width and --grounding_height are required for this provider")
 
     # Re-scales screenshot size to ensure it fits in UI-TARS context limit
     screen_width, screen_height = pyautogui.size()
@@ -344,9 +408,29 @@ def main():
         "model": args.ground_model,
         "base_url": args.ground_url,
         "api_key": args.ground_api_key,
-        "grounding_width": args.grounding_width,
-        "grounding_height": args.grounding_height,
+        "grounding_width": args.grounding_width or scaled_width,
+        "grounding_height": args.grounding_height or scaled_height,
     }
+    if args.ground_provider == "claude_subscription":
+        engine_params_for_grounding["system_prompt_override"] = GROUNDING_SYSTEM_PROMPT
+
+    confirm_actions = use_subscription and not args.no_confirm
+    if use_subscription:
+        try:
+            ensure_subscription_only()
+        except SubscriptionStop as stop:
+            sys.exit(f"⛔ {stop}")
+        print("✅ Using your Claude Max login (no API key).")
+
+    def run_task(instruction):
+        set_call_budget(args.max_model_calls if use_subscription else None)
+        run_agent(agent, instruction, scaled_width, scaled_height, args.max_steps, confirm_actions)
+        if use_subscription:
+            used = usage_summary()
+            print(
+                f"Claude calls this task: {used['calls']} of {used['max_calls']}; "
+                f"client-side API-price estimate ${used['est_cost_usd']:.2f} (not a bill; usage counts against your Max limits)"
+            )
 
     # Initialize environment based on user preference
     local_env = None
@@ -378,7 +462,7 @@ def main():
     # handle query from command line
     if isinstance(task, str) and task.strip():
         agent.reset()
-        run_agent(agent, task, scaled_width, scaled_height)
+        run_task(task)
         return
 
     while True:
@@ -387,7 +471,7 @@ def main():
         agent.reset()
 
         # Run the agent on your own device
-        run_agent(agent, query, scaled_width, scaled_height)
+        run_task(query)
 
         response = input("Would you like to provide another query? (y/n): ")
         if response.lower() != "y":

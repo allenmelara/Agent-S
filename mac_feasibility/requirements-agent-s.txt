@@ -1,0 +1,9 @@
+# Minimal set to run Agent S3 on a Mac with --provider claude_subscription.
+# Avoids `pip install -e .`, whose setup.py caps Python at 3.12 and pulls
+# heavy packages S3 never imports (paddlepaddle, paddleocr, ...).
+-r requirements.txt
+numpy
+backoff
+openai      # imported by gui_agents/s3/core/engine.py; not called in this mode
+anthropic   # same; no API key is used
+pytesseract # also needs `brew install tesseract` for text-span actions
