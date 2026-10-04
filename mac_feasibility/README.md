@@ -8,7 +8,7 @@ Claude Max plan, with no API key and no hosted model. They don't change
 |---|---|---|
 | 1 `check_1_auth.py` | Claude would use your claude.ai Max login. API keys, gateways, Bedrock/Vertex/Foundry and hosted Agent S provider keys are refused. | 0 |
 | 2 `check_2_image_latency.py` | One generated test image goes through the Agent SDK with all tools disabled. Measures response time. | 1 |
-| 3 `check_3_persistent_session.py` | Fresh session per call vs one long-lived session. Also tests `/clear` between turns. | 6 (default `-n 3`) |
+| 3 `check_3_persistent_session.py` | Fresh session per call vs one long-lived session, using ~2,000-token turns. Tests whether `/clear` really drops history, by context size and by asking Claude to recall an earlier codeword. | 8 (default `-n 3`) |
 | 4 `check_4_hardware.py` | Chip, memory, disk and installed local runtimes, then a UI-TARS size suggestion | 0 |
 | 5 `check_5_coordinates.py` | Retina scaling math (no model), then accuracy on a generated fake screen | 0, or 4 per grounder |
 
@@ -55,7 +55,7 @@ or if your Max limit is reached.
    cd mac_feasibility
    python run_all.py
    ```
-9. **If check 1 passes, run the Claude checks** (about 11 small calls on your
+9. **If check 1 passes, run the Claude checks** (about 13 small calls on your
    Max allowance):
    ```bash
    python run_all.py --with-claude            # add --model sonnet to pick a model
@@ -84,7 +84,7 @@ or if your Max limit is reached.
 |---|---|---|---|
 | 1 | Installed CLI and SDK-bundled CLI both report `authMethod=claude.ai`, `apiProvider=firstParty`, a Max plan and no API key. A live SDK handshake also reports a Max plan. | Any API key, `apiKeyHelper`, gateway URL, third-party provider, `CLAUDE_CODE_OAUTH_TOKEN`, hosted Agent S key, or a non-Max plan | PASS |
 | 2 | Session started with no API key source, no tools were offered or used, and Claude read the number `4719` and both shapes | Guard tripped, SDK error, or the image wasn't understood | PASS. Timing is informational. |
-| 3 | The persistent session saves more than 0.5 s per call. `/clear` keeps context flat. | Guard tripped or SDK error | Unknown until measured. WARN means startup isn't the bottleneck. |
+| 3 | Claude recalls the codeword without `/clear` (control) but not after it, and context grows by less than 1,000 tokens per turn. Timing is a separate PASS/WARN line. | After `/clear`, Claude still knows an earlier codeword, or context grows ~2,000 tokens per turn (history is kept), or `/clear` doesn't complete | PASS, unknown until measured. WARN on the control means the probe was inconclusive. |
 | 4 | Apple Silicon. A suggested UI-TARS size fits your memory estimate. | Intel Mac (use Claude for grounding instead) | PASS on Apple Silicon with 16 GB or more. The estimate is unverified. |
 | 5A | Screen Recording granted, one display, and Agent S's point/pixel round-trip error at most 1.5 pt | Missing permission or wrong scaling math | PASS |
 | 5B | Grounder hits every fake button in some coordinate space. The report gives the matching `--grounding_width/height`. | Fewer than half hit | Unknown until measured |
@@ -127,7 +127,7 @@ stay estimates until measured:
   accepts anything containing "max").
 - That image input works through the SDK on your account, and its response
   time.
-- Whether a persistent session or `/clear` actually saves time.
+- Whether a persistent session saves time, and whether `/clear` really drops history.
 - Real memory headroom and the speed of UI-TARS-1.5-7B on your chip; the
   quantization suggestions are rough estimates.
 - Grounding accuracy of Claude or local UI-TARS, which coordinate space
