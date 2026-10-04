@@ -380,6 +380,11 @@ def main():
         help="claude_subscription only: stop a task after this many Claude calls",
     )
     parser.add_argument(
+        "--fresh_sessions",
+        action="store_true",
+        help="claude_subscription only: start a new Claude session for every call instead of reusing one per role (slower)",
+    )
+    parser.add_argument(
         "--no_confirm",
         action="store_true",
         help="claude_subscription only: run actions without a confirmation dialog",
@@ -431,6 +436,9 @@ def main():
     }
     if args.ground_provider == "claude_subscription":
         engine_params_for_grounding["system_prompt_override"] = GROUNDING_SYSTEM_PROMPT
+        engine_params_for_grounding["persistent"] = not args.fresh_sessions
+    if args.provider == "claude_subscription":
+        engine_params["persistent"] = not args.fresh_sessions
 
     confirm_actions = use_subscription and not args.no_confirm
     if use_subscription:

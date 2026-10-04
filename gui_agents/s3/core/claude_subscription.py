@@ -1,7 +1,9 @@
 """Claude via a claude.ai Max login, through the Claude Agent SDK.
 
-engine_type "claude_subscription" runs each model call as a fresh, tool-less
-Claude Code session. It never uses an API key: before the first call it
+engine_type "claude_subscription" runs each model call through a tool-less
+Claude Code session: by default one kept-open session per engine, cleared with
+/clear before each call, falling back to a fresh session per call if that
+misbehaves. It never uses an API key: before the first call it
 checks that Claude Code is signed in to claude.ai with a Max plan and that no
 API key, gateway or third-party provider is configured, and it stops the
 agent if a call reports an API key source, extra (billed) usage, or a reached
@@ -17,6 +19,8 @@ products for other people.
 from __future__ import annotations
 
 import asyncio
+import atexit
+import concurrent.futures
 import json
 import logging
 import os
@@ -24,6 +28,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import weakref
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -247,8 +252,81 @@ def _run(coro):
     return box["value"]
 
 
+class _ClaudeCallError(RuntimeError):
+    """Claude answered with an error result; the session itself is fine."""
+
+
+class _PersistentUnavailable(Exception):
+    """The persistent session could not be used; fall back to fresh sessions."""
+
+
+class _LoopThread:
+    """One background event loop that owns every persistent SDK session.
+
+    Agent S is synchronous, but a ClaudeSDKClient must stay on the event loop
+    it was connected on, so persistent sessions live here between calls.
+    """
+
+    _lock = threading.Lock()
+    _instance = None
+
+    def __init__(self):
+        self.loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=self.loop.run_forever, name="claude-sessions", daemon=True)
+        thread.start()
+
+    @classmethod
+    def get(cls) -> "_LoopThread":
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = cls()
+            return cls._instance
+
+    def run(self, coro, timeout: float):
+        async def guarded():
+            # SubscriptionStop is a BaseException; carry it across threads as data.
+            try:
+                return "ok", await coro
+            except SubscriptionStop as stop:
+                return "stop", str(stop)
+
+        future = asyncio.run_coroutine_threadsafe(guarded(), self.loop)
+        try:
+            tag, value = future.result(timeout)
+        except concurrent.futures.TimeoutError as exc:
+            future.cancel()
+            raise _PersistentUnavailable(f"no reply within {timeout:.0f}s") from exc
+        if tag == "stop":
+            raise SubscriptionStop(value)
+        return value
+
+
+_live_engines: "weakref.WeakSet[LMMEngineClaudeSubscription]" = weakref.WeakSet()
+
+
+@atexit.register
+def _close_all_sessions() -> None:
+    if _LoopThread._instance is None:
+        return
+    for engine in list(_live_engines):
+        try:
+            _LoopThread._instance.run(engine._close(), timeout=5)
+        except BaseException:
+            pass
+
+
 class LMMEngineClaudeSubscription:
-    """One fresh, tool-less Claude Code session per call, on your Max login."""
+    """Claude Code on your Max login, with no tools.
+
+    persistent=True (default) keeps one session per engine and sends /clear
+    before every call after the first; Agent S passes its own history each
+    time, so the session must not keep one. If /clear fails or the context
+    does not shrink back, the engine falls back to one fresh session per call.
+    """
+
+    CALL_TIMEOUT_S = 300
+    CLEAR_TIMEOUT_S = 30
+    CLEAR_SLACK_TOKENS = 2000  # allowed context above the fresh-session baseline after /clear
 
     def __init__(
         self,
@@ -257,6 +335,7 @@ class LMMEngineClaudeSubscription:
         base_url=None,
         temperature=None,
         system_prompt_override=None,
+        persistent=True,
         **kwargs,
     ):
         if api_key:
@@ -265,6 +344,12 @@ class LMMEngineClaudeSubscription:
             raise SubscriptionStop("claude_subscription never takes a base URL; remove --model_url/--ground_url")
         self.model = model or None  # None = your Claude Code default model
         self.system_prompt_override = system_prompt_override
+        self.persistent = persistent
+        self._client = None
+        self._client_system = None
+        self._workdir = None
+        self._baseline_tokens = None
+        self._turns = 0
         if temperature not in (None, 0, 0.0):
             logger.info("claude_subscription ignores temperature=%s", temperature)
 
@@ -274,62 +359,156 @@ class LMMEngineClaudeSubscription:
         system, blocks = to_sdk_prompt(messages)
         if self.system_prompt_override:
             system = self.system_prompt_override
+        system = system or "You are a helpful assistant."
+        if self.persistent:
+            try:
+                return _LoopThread.get().run(self._ask_persistent(system, blocks), self.CALL_TIMEOUT_S)
+            except _PersistentUnavailable as exc:
+                logger.warning("claude_subscription: persistent session off for this engine (%s)", exc)
+                self.persistent = False
+                try:
+                    _LoopThread.get().run(self._close(), timeout=10)
+                except BaseException:
+                    pass
         return _run(self._ask(system, blocks))
 
     # Claude Code decides on its own whether to think; Agent S's prompts ask for
     # <thoughts>/<answer> tags in the text, which works the same way.
     generate_with_thinking = generate
 
-    async def _ask(self, system: str, blocks: list[dict]) -> str:
+    def _options(self, system: str, workdir: str):
+        from claude_agent_sdk import ClaudeAgentOptions
+
+        return ClaudeAgentOptions(
+            tools=[],  # no built-in tools; Agent S acts, Claude only answers
+            allowed_tools=[],
+            system_prompt=system,
+            setting_sources=[],  # ignore user/project hooks, CLAUDE.md, plugins
+            strict_mcp_config=True,
+            max_turns=1,
+            model=self.model,
+            cwd=workdir,
+            extra_args={"no-session-persistence": None},  # keep screenshots out of transcripts
+        )
+
+    @staticmethod
+    async def _prompt(blocks: list[dict]):
+        yield {
+            "type": "user",
+            "message": {"role": "user", "content": blocks},
+            "parent_tool_use_id": None,
+        }
+
+    @staticmethod
+    def _handle(msg, parts: list[str]) -> None:
+        """Billing checks and text collection, shared by both session modes."""
         from claude_agent_sdk import (
             AssistantMessage,
-            ClaudeAgentOptions,
             RateLimitEvent,
             ResultMessage,
             SystemMessage,
             TextBlock,
-            query,
         )
 
-        async def prompt():
-            yield {
-                "type": "user",
-                "message": {"role": "user", "content": blocks},
-                "parent_tool_use_id": None,
-            }
+        if isinstance(msg, SystemMessage) and msg.subtype == "init":
+            source = msg.data.get("apiKeySource")
+            if source not in (None, "none"):
+                raise SubscriptionStop(f"session started with apiKeySource={source!r}")
+            if msg.data.get("tools"):
+                raise SubscriptionStop(f"tools were not disabled: {msg.data['tools']}")
+        elif isinstance(msg, RateLimitEvent):
+            info = msg.rate_limit_info
+            if info.rate_limit_type == "overage":
+                raise SubscriptionStop("this call drew on extra (billed) usage; stopping")
+            if info.status == "rejected":
+                raise SubscriptionStop(f"Max usage limit reached ({info.rate_limit_type})")
+        elif isinstance(msg, AssistantMessage):
+            parts.extend(b.text for b in msg.content if isinstance(b, TextBlock))
+        elif isinstance(msg, ResultMessage):
+            if msg.total_cost_usd:
+                with _budget_lock:
+                    _budget["est_cost_usd"] += msg.total_cost_usd
+            if msg.is_error:
+                raise _ClaudeCallError(f"Claude call failed: {msg.result or msg.errors}")
+
+    async def _ask(self, system: str, blocks: list[dict]) -> str:
+        """One fresh session for one call."""
+        from claude_agent_sdk import query
 
         parts: list[str] = []
         with tempfile.TemporaryDirectory(prefix="agent-s-claude-") as workdir:
-            options = ClaudeAgentOptions(
-                tools=[],  # no built-in tools; Agent S acts, Claude only answers
-                allowed_tools=[],
-                system_prompt=system or "You are a helpful assistant.",
-                setting_sources=[],  # ignore user/project hooks, CLAUDE.md, plugins
-                strict_mcp_config=True,
-                max_turns=1,
-                model=self.model,
-                cwd=workdir,
-                extra_args={"no-session-persistence": None},  # keep screenshots out of transcripts
-            )
-            async for msg in query(prompt=prompt(), options=options):
-                if isinstance(msg, SystemMessage) and msg.subtype == "init":
-                    source = msg.data.get("apiKeySource")
-                    if source not in (None, "none"):
-                        raise SubscriptionStop(f"session started with apiKeySource={source!r}")
-                    if msg.data.get("tools"):
-                        raise SubscriptionStop(f"tools were not disabled: {msg.data['tools']}")
-                elif isinstance(msg, RateLimitEvent):
-                    info = msg.rate_limit_info
-                    if info.rate_limit_type == "overage":
-                        raise SubscriptionStop("this call drew on extra (billed) usage; stopping")
-                    if info.status == "rejected":
-                        raise SubscriptionStop(f"Max usage limit reached ({info.rate_limit_type})")
-                elif isinstance(msg, AssistantMessage):
-                    parts.extend(b.text for b in msg.content if isinstance(b, TextBlock))
-                elif isinstance(msg, ResultMessage):
-                    if msg.total_cost_usd:
-                        with _budget_lock:
-                            _budget["est_cost_usd"] += msg.total_cost_usd
-                    if msg.is_error:
-                        raise RuntimeError(f"Claude call failed: {msg.result or msg.errors}")
+            async for msg in query(prompt=self._prompt(blocks), options=self._options(system, workdir)):
+                self._handle(msg, parts)
         return "".join(parts)
+
+    async def _context_tokens(self):
+        try:
+            usage = await self._client.get_context_usage()
+            return usage.get("totalTokens")
+        except Exception:
+            return None
+
+    async def _connect(self, system: str) -> None:
+        from claude_agent_sdk import ClaudeSDKClient
+
+        await self._close()
+        self._workdir = tempfile.TemporaryDirectory(prefix="agent-s-claude-")
+        client = ClaudeSDKClient(options=self._options(system, self._workdir.name))
+        try:
+            await client.connect()
+        except Exception as exc:
+            self._workdir.cleanup()
+            self._workdir = None
+            raise _PersistentUnavailable(f"could not open a session: {exc}") from exc
+        self._client, self._client_system, self._turns = client, system, 0
+        self._baseline_tokens = await self._context_tokens()
+        _live_engines.add(self)
+
+    async def _clear(self) -> None:
+        async def drain():
+            await self._client.query("/clear")
+            async for _ in self._client.receive_response():
+                pass
+
+        try:
+            await asyncio.wait_for(drain(), timeout=self.CLEAR_TIMEOUT_S)
+        except asyncio.TimeoutError as exc:
+            raise _PersistentUnavailable("/clear did not finish") from exc
+        tokens = await self._context_tokens()
+        if tokens is not None and self._baseline_tokens is not None:
+            if tokens > self._baseline_tokens + self.CLEAR_SLACK_TOKENS:
+                raise _PersistentUnavailable(
+                    f"/clear left {tokens} tokens of context (fresh session: {self._baseline_tokens})"
+                )
+
+    async def _ask_persistent(self, system: str, blocks: list[dict]) -> str:
+        if self._client is None or self._client_system != system:
+            await self._connect(system)  # a new system prompt needs a new session
+        try:
+            if self._turns:
+                await self._clear()
+            parts: list[str] = []
+            await self._client.query(self._prompt(blocks))
+            async for msg in self._client.receive_response():
+                self._handle(msg, parts)
+            self._turns += 1
+            return "".join(parts)
+        except (_ClaudeCallError, _PersistentUnavailable):
+            raise
+        except Exception as exc:  # transport or process trouble: drop this session
+            raise _PersistentUnavailable(f"session error: {exc}") from exc
+        except BaseException:  # SubscriptionStop or cancellation: never reuse the session
+            await self._close()
+            raise
+
+    async def _close(self) -> None:
+        client, self._client = self._client, None
+        if client is not None:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+        if self._workdir is not None:
+            self._workdir.cleanup()
+            self._workdir = None
+        self._turns = 0

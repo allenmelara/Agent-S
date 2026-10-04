@@ -78,6 +78,7 @@ class TestPromptConversion(unittest.TestCase):
 
 class TestEngine(GuardBypass):
     def make_agent(self, **params):
+        params.setdefault("persistent", False)  # these tests cover fresh sessions
         return LMMAgent({"engine_type": "claude_subscription", "model": None, **params})
 
     def test_returns_text_and_disables_tools(self):
@@ -174,7 +175,7 @@ class TestGroundingCache(GuardBypass):
             yield AssistantMessage([TextBlock("10 20")], "m")
             yield RESULT_OK
 
-        params = {"engine_type": "claude_subscription", "model": None}
+        params = {"engine_type": "claude_subscription", "model": None, "persistent": False}
         ground = dict(params, grounding_width=100, grounding_height=100,
                       system_prompt_override=cs.GROUNDING_SYSTEM_PROMPT)
         aci = OSWorldACI(env=None, platform="darwin", engine_params_for_generation=params,
@@ -186,6 +187,122 @@ class TestGroundingCache(GuardBypass):
         self.assertEqual(a, [10, 20])
         self.assertEqual(a, b)
         self.assertEqual(len(calls), 2)  # one per distinct screenshot
+
+
+class FakeClient:
+    """Stands in for ClaudeSDKClient: keeps history until /clear."""
+
+    instances = []
+    clear_works = True
+    clear_hangs = False
+    api_key_source = "none"
+
+    def __init__(self, options):
+        self.options = options
+        self.history = []
+        self.sent = []
+        self.connected = self.disconnected = False
+        self._pending = []
+        FakeClient.instances.append(self)
+
+    async def connect(self, prompt=None):
+        self.connected = True
+
+    async def disconnect(self):
+        self.disconnected = True
+
+    async def query(self, prompt, session_id="default"):
+        if prompt == "/clear":
+            self.sent.append("/clear")
+            if FakeClient.clear_works:
+                self.history = []
+            self._pending = [] if FakeClient.clear_hangs else [RESULT_OK]
+            return
+        async for msg in prompt:
+            text = "".join(b.get("text", "") for b in msg["message"]["content"])
+            self.sent.append(text)
+            self.history.append(text)
+        self._pending = [
+            SystemMessage("init", {"apiKeySource": FakeClient.api_key_source, "tools": []}),
+            AssistantMessage([TextBlock(f"reply to {text}")], "m"),
+            RESULT_OK,
+        ]
+
+    async def receive_response(self):
+        if not self._pending:  # a /clear that never answers
+            await asyncio.sleep(3600)
+        for msg in self._pending:
+            yield msg
+
+    async def get_context_usage(self):
+        return {"totalTokens": 1000 + 3000 * len(self.history)}
+
+
+class TestPersistentSessions(GuardBypass):
+    def setUp(self):
+        super().setUp()
+        FakeClient.instances = []
+        FakeClient.clear_works, FakeClient.clear_hangs, FakeClient.api_key_source = True, False, "none"
+
+    def agent(self, system="SYS"):
+        agent = LMMAgent({"engine_type": "claude_subscription", "model": None}, system_prompt=system)
+        return agent
+
+    def ask(self, agent, text):
+        agent.messages = agent.messages[:1]
+        agent.add_message(text, role="user")
+        return agent.get_response()
+
+    def test_one_session_cleared_between_calls(self):
+        with patch.object(claude_agent_sdk, "ClaudeSDKClient", FakeClient):
+            agent = self.agent()
+            self.assertEqual(self.ask(agent, "a"), "reply to a")
+            self.assertEqual(self.ask(agent, "b"), "reply to b")
+        self.assertEqual(len(FakeClient.instances), 1)
+        self.assertEqual(FakeClient.instances[0].sent, ["a", "/clear", "b"])
+        self.assertTrue(agent.engine.persistent)
+
+    def test_new_system_prompt_opens_new_session(self):
+        with patch.object(claude_agent_sdk, "ClaudeSDKClient", FakeClient):
+            agent = self.agent("one")
+            self.ask(agent, "a")
+            agent.add_system_prompt("two")
+            self.ask(agent, "b")
+        self.assertEqual(len(FakeClient.instances), 2)
+        self.assertTrue(FakeClient.instances[0].disconnected)
+        self.assertEqual(FakeClient.instances[1].options.system_prompt, "two")
+
+    def test_clear_that_keeps_history_falls_back_to_fresh(self):
+        FakeClient.clear_works = False
+        fresh = (INIT_OK, AssistantMessage([TextBlock("fresh reply")], "m"), RESULT_OK)
+        with patch.object(claude_agent_sdk, "ClaudeSDKClient", FakeClient), patch.object(
+            claude_agent_sdk, "query", fake_query(*fresh)
+        ):
+            agent = self.agent()
+            self.ask(agent, "a")
+            self.assertEqual(self.ask(agent, "b"), "fresh reply")
+        self.assertFalse(agent.engine.persistent)
+        self.assertTrue(FakeClient.instances[0].disconnected)
+
+    def test_clear_that_hangs_falls_back_to_fresh(self):
+        FakeClient.clear_hangs = True
+        fresh = (INIT_OK, AssistantMessage([TextBlock("fresh reply")], "m"), RESULT_OK)
+        with patch.object(claude_agent_sdk, "ClaudeSDKClient", FakeClient), patch.object(
+            claude_agent_sdk, "query", fake_query(*fresh)
+        ), patch.object(cs.LMMEngineClaudeSubscription, "CLEAR_TIMEOUT_S", 0.2):
+            agent = self.agent()
+            self.ask(agent, "a")
+            self.assertEqual(self.ask(agent, "b"), "fresh reply")
+        self.assertFalse(agent.engine.persistent)
+
+    def test_billing_stop_propagates_and_closes_session(self):
+        FakeClient.api_key_source = "ANTHROPIC_API_KEY"
+        with patch.object(claude_agent_sdk, "ClaudeSDKClient", FakeClient):
+            agent = self.agent()
+            with self.assertRaises(cs.SubscriptionStop):
+                call_llm_safe(agent)
+        self.assertTrue(FakeClient.instances[0].disconnected)
+        self.assertIsNone(agent.engine._client)
 
 
 class TestMacOpen(unittest.TestCase):

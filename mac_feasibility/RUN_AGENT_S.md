@@ -35,13 +35,14 @@ That's about 3 calls per step. `--max_model_calls` (default 60) stops a task
 before it runs away. Run `/usage` in an interactive `claude` session before
 and after a task to see what it really costs.
 
-## Setup (in the `~/Agent-S-checks` worktree you already have)
+## Setup (in your repo at `~/Projects/Agent-S`)
 
 1. **Update the branch.**
    ```bash
-   cd ~/Agent-S-checks
-   git pull https://github.com/allenmelara/Agent-S.git claude/vigilant-franklin-5fs60d
+   cd ~/Projects/Agent-S
+   conda deactivate
    source .venv/bin/activate
+   git pull --ff-only https://github.com/allenmelara/Agent-S.git claude/vigilant-franklin-5fs60d
    pip install -r mac_feasibility/requirements-agent-s.txt
    brew install tesseract
    ```
@@ -68,12 +69,33 @@ and after a task to see what it really costs.
    - your `/usage` before and after;
    - whether each action did what it said.
 
+## Start Agent S from the Dock
+
+`mac_app/build_agent_s_app.sh` builds **Agent S.app** in `~/Applications`.
+Opening it asks what Agent S should do. It then runs Agent S in a Terminal
+window with the settings above (Max login, a dialog before every action,
+15 steps, 60 calls). Running inside Terminal reuses the permissions you
+already gave Terminal, and you can watch the log and stop it with Ctrl+C.
+
+```bash
+cd ~/Projects/Agent-S
+bash mac_app/build_agent_s_app.sh
+```
+
+Then open the app once, right-click its Dock icon, and choose **Options →
+Keep in Dock**. Running the builder with `--dock` adds it to the Dock for
+you (this restarts the Dock). The first time, macOS asks whether "Agent S"
+may control Terminal; click **OK**. Re-run the builder if you move the
+repo folder.
+
 ## Options
 
 - `--model sonnet --ground_model sonnet`: a smaller model that may stretch
   your allowance. Its accuracy here is untested; check 5 measured Opus 5.5.
 - `--max_trajectory_length 4`: sends fewer old screenshots per planner
   call. The effect on quality is untested.
+- `--fresh_sessions`: start a new Claude session for every call (the
+  slower, original behaviour).
 - `--no_confirm`: skips the dialogs. Only use it after several supervised
   runs.
 - Leave `--enable_local_env` off. It lets the agent run arbitrary code
@@ -82,9 +104,13 @@ and after a task to see what it really costs.
 ## Known limits
 
 - **Temperature is ignored.** The Agent SDK has no temperature setting.
-- **A new session per call.** The ~1.3 s/call saving from a persistent
-  session is not used yet. It will be added only if check 3 shows `/clear`
-  really drops history.
+- **Kept-open sessions.** Each role (planner, reflection, grounding, and
+  the code agent if used) keeps one Claude Code session open and sends
+  `/clear` before each call. Check 3 measured about 1.5 s per call instead
+  of 2.8 s. If `/clear` doesn't finish, or the context doesn't shrink back,
+  that role switches to a new session per call for the rest of the run.
+  Each open session is a Claude Code process using memory; use
+  `--fresh_sessions` to turn this off.
 - **The dialog takes focus.** After you click OK, the app that was in front
   before the dialog is brought back. Still watch for typing that lands in
   the wrong window.
