@@ -1,7 +1,7 @@
 """Run the feasibility checks in order and print one pass/fail table.
 
 Default: checks 1, 4 and 5 part A only (no model calls).
---with-claude: also checks 2, 3 and 5 with Claude as grounder (about 15 calls).
+--with-claude: also checks 2, 3 and 5 with Claude as grounder (about 13 calls).
 --with-local URL: also check 5 with a local grounder at URL (e.g. http://localhost:1234/v1).
 Model-call checks run only if check 1 passed.
 """
