@@ -335,6 +335,50 @@ class TestMacOpen(unittest.TestCase):
         self.assertEqual(self.run_code("Bob's App", exists=False), [["open", "-a", "Bob's App"]])
 
 
+class TestActionSummary(unittest.TestCase):
+    PLAN = (
+        "(Previous action verification)\nNo action has been taken yet.\n\n"
+        "(Screenshot Analysis)\nThe Calculator app is not open yet.\n\n"
+        "(Next Action)\nOpen the Calculator application using the open action.\n\n"
+        "(Grounded Action)\n```python\nagent.open(\"Calculator\")\n```"
+    )
+
+    def test_shows_plan_call_and_code(self):
+        from gui_agents.s3.agents.grounding import _macos_open_code
+        from gui_agents.s3.utils.action_summary import describe_action
+
+        code = _macos_open_code("Calculator")
+        text = describe_action({"plan": self.PLAN, "plan_code": 'agent.open("Calculator")'}, code)
+        self.assertTrue(text.startswith("Next action: Open the Calculator application using the open action."))
+        self.assertIn('Agent S call: agent.open("Calculator")', text)
+        self.assertIn("Code that will run:\n" + code[:40], text)
+        self.assertNotIn("⚠️", text)  # macOS's own launcher is not flagged
+        self.assertNotIn("Screenshot Analysis", text)
+
+    def test_flags_shell_and_delete(self):
+        from gui_agents.s3.utils.action_summary import describe_action
+
+        text = describe_action({}, "import subprocess; subprocess.run(['rm', '-rf', '/tmp/x'])")
+        self.assertIn("⚠️ Runs a shell command on your Mac.", text)
+        self.assertIn("⚠️ May delete files.", text)
+        self.assertTrue(text.startswith("⚠️"))  # no plan available: warnings come first
+
+    def test_flags_quit_and_handles_missing_info(self):
+        from gui_agents.s3.utils.action_summary import describe_action
+
+        text = describe_action(None, "import pyautogui; pyautogui.hotkey('command', 'q')")
+        self.assertIn("⚠️ Quits an app (Command+Q).", text)
+        self.assertTrue(text.endswith("Run it?"))
+
+    def test_long_plan_is_clipped(self):
+        from gui_agents.s3.utils.action_summary import describe_action
+
+        plan = "(Next Action)\n" + "x" * 1000 + "\n(Grounded Action)\n"
+        line = describe_action({"plan": plan}, "pass").split("\n\n")[0]
+        self.assertLessEqual(len(line), len("Next action: ") + 300)
+        self.assertTrue(line.endswith("…"))
+
+
 class TestGuard(unittest.TestCase):
     def setUp(self):
         cs._guard_passed = False

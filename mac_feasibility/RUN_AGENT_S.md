@@ -61,7 +61,9 @@ and after a task to see what it really costs.
      --task "Open the Calculator app"
    ```
    It prints `✅ Using your Claude Max login (no API key).` before doing
-   anything. A dialog shows each action's code; click **OK** to run it or
+   anything. A dialog shows Agent S's next action in plain English, the Agent S
+   call, any warnings (shell commands, deleting files, quitting apps) and
+   the code; click **OK** to run it or
    **Cancel** to stop. Ctrl+C pauses the agent.
 6. **Send back:**
    - the terminal output from `RAW GROUNDING MODEL RESPONSE` to the end,

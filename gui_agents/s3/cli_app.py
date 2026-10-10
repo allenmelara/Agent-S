@@ -23,6 +23,7 @@ from gui_agents.s3.core.claude_subscription import (
     usage_summary,
 )
 from gui_agents.s3.utils.local_env import LocalEnv
+from gui_agents.s3.utils.action_summary import describe_action
 
 current_platform = platform.system().lower()
 
@@ -150,14 +151,13 @@ def _frontmost_app_path():
         return None
 
 
-def show_permission_dialog(code: str, action_description: str):
+def show_permission_dialog(message: str):
     """Show a platform-specific permission dialog and return True if approved."""
     if platform.system() == "Darwin":
         front = _frontmost_app_path()
-        text = f"Do you want to execute this action?\n\n{code}\n\nwhich will try to {action_description}"
-        text = text[:1500].replace("\\", "\\\\").replace('"', '\\"')
+        text = message[:1500].replace("\\", "\\\\").replace('"', '\\"')
         script = (
-            f'display dialog "{text}" with title "Action Permission" '
+            f'display dialog "{text}" with title "Agent S — approve this action?" '
             'buttons {"Cancel", "OK"} default button "Cancel" cancel button "Cancel"'
         )
         approved = subprocess.run(["osascript", "-e", script], capture_output=True).returncode == 0
@@ -168,10 +168,11 @@ def show_permission_dialog(code: str, action_description: str):
             time.sleep(0.7)
         return approved
     elif platform.system() == "Linux":
-        result = os.system(
-            f'zenity --question --title="Action Permission" --text="Do you want to execute this action?\n\n{code}" --width=400 --height=200'
+        result = subprocess.run(
+            ["zenity", "--question", "--title=Agent S — approve this action?", f"--text={message[:1500]}", "--width=500"],
+            capture_output=True,
         )
-        return result == 0
+        return result.returncode == 0
     return False
 
 
@@ -253,11 +254,7 @@ def run_agent(
                 time.sleep(0.1)
 
             # Ask for permission before executing
-            if confirm_actions and not show_permission_dialog(
-                code[0], info.get("executor_plan", "carry out the next step")[:300]
-                if isinstance(info, dict)
-                else "carry out the next step",
-            ):
+            if confirm_actions and not show_permission_dialog(describe_action(info, code[0])):
                 print("🚫 Action declined; stopping this task.")
                 break
             try:
