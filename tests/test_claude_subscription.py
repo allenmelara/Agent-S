@@ -486,6 +486,118 @@ class TestTerminalKeyGuard(unittest.TestCase):
         self.assertFalse(is_terminal_app(None))
 
 
+class TestWatchClaude(unittest.TestCase):
+    def setUp(self):
+        import importlib.util
+        import tempfile
+        from pathlib import Path
+
+        path = Path(__file__).resolve().parent.parent / "mac_app" / "watch_claude.py"
+        spec = importlib.util.spec_from_file_location("agent_s_watch", path)
+        self.wc = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.wc)
+        self.tmp = tempfile.TemporaryDirectory()
+        state = Path(self.tmp.name)
+        self.patches = [
+            patch.object(self.wc, name, state / filename)
+            for name, filename in (
+                ("STATE_DIR", ""), ("PID_FILE", "watch.pid"), ("STOP_FILE", "watch_stop"),
+                ("NOW_FILE", "watch_now"), ("STATE_FILE", "watch_state.json"), ("LOG_FILE", "watch.log"),
+            )
+        ]
+        for p in self.patches:
+            p.start()
+        self.state = state
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+        self.tmp.cleanup()
+
+    def window(self, lines, spinner=0):
+        """A fake Claude window: `lines` reply lines, and a spinner frame."""
+        from PIL import Image, ImageDraw
+
+        img = Image.new("RGB", (900, 700), (30, 30, 30))
+        d = ImageDraw.Draw(img)
+        for i in range(lines):
+            d.rectangle((40, 80 + i * 30, 800, 95 + i * 30), fill=(220, 220, 220))
+        if spinner:  # a 16 px spinner, like Claude's "working" indicator
+            d.ellipse((40, 560, 56, 576), fill=(200, 120, 40) if spinner % 2 else (40, 40, 40))
+        return self.wc.signature(img)
+
+    def test_decide(self):
+        base = self.window(5)
+        self.assertEqual(self.wc.decide(base, None, None), "no-window")
+        self.assertEqual(self.wc.decide(base, self.window(5), self.window(5)), "unchanged")
+        self.assertEqual(self.wc.decide(base, self.window(9, spinner=1), self.window(9, spinner=2)), "working")
+        self.assertEqual(self.wc.decide(base, self.window(12), self.window(12)), "relay")
+        self.assertEqual(self.wc.decide(None, self.window(5), self.window(5)), "relay")  # "Check now"
+
+    def test_ignores_typing_in_the_input_box(self):
+        from PIL import Image, ImageDraw
+
+        def with_draft(text_width):
+            img = Image.new("RGB", (900, 700), (30, 30, 30))
+            d = ImageDraw.Draw(img)
+            for i in range(5):
+                d.rectangle((40, 80 + i * 30, 800, 95 + i * 30), fill=(220, 220, 220))
+            d.rectangle((40, 640, 40 + text_width, 660), fill=(255, 255, 255))  # bottom 15%: input box
+            return self.wc.signature(img)
+
+        self.assertEqual(self.wc.decide(with_draft(0), with_draft(600), with_draft(600)), "unchanged")
+
+    def test_wait_for_stop_now_timeout(self):
+        sleeps = []
+        self.assertEqual(self.wc.wait_for(6, sleep=sleeps.append), "timeout")
+        self.assertEqual(sum(sleeps), 6)
+        self.wc.NOW_FILE.touch()
+        self.assertEqual(self.wc.wait_for(600, sleep=lambda s: None), "now")
+        self.assertFalse(self.wc.NOW_FILE.exists())
+        self.wc.STOP_FILE.touch()
+        self.assertEqual(self.wc.wait_for(600, sleep=lambda s: None), "stop")
+
+    def test_relay_command_and_watcher_pid(self):
+        cmd = self.wc.relay_command("risky")
+        self.assertEqual(cmd[cmd.index("--task") + 1], self.wc.RELAY_TASK)
+        self.assertEqual(cmd[cmd.index("--approval") + 1], "risky")
+        self.assertIsNone(self.wc.watcher_pid())
+        self.wc.PID_FILE.write_text(str(os.getpid()))
+        self.assertEqual(self.wc.watcher_pid(), os.getpid())
+
+    def test_check_once_relays_only_new_settled_reply(self):
+        base, new = self.window(5), self.window(12)
+        state = {"baseline": base.hex()}
+        captures = iter([new, new])
+        clip = iter(["old", "new-reply"])
+        runs = []
+        with patch.object(self.wc, "claude_window_id", return_value=7), patch.object(
+            self.wc, "capture_signature", lambda w: next(captures)
+        ), patch.object(self.wc, "clipboard_hash", lambda: next(clip)), patch.object(
+            self.wc.subprocess, "run", lambda cmd, **kw: runs.append(cmd)
+        ), patch.object(self.wc, "SETTLE_SECONDS", 0), patch.object(self.wc, "notify"), patch.object(
+            self.wc.run_control, "running_pid", return_value=None
+        ):
+            self.assertEqual(self.wc.check_once(state, forced=False, approval="risky"), "sent")
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(state["baseline"], new.hex())
+        self.assertEqual(state["last_sent"], "new-reply")
+
+    def test_check_once_skips_when_busy_or_unchanged(self):
+        base = self.window(5)
+        runs = []
+        with patch.object(self.wc.subprocess, "run", lambda cmd, **kw: runs.append(cmd)), patch.object(
+            self.wc, "SETTLE_SECONDS", 0
+        ):
+            with patch.object(self.wc.run_control, "running_pid", return_value=123):
+                self.assertEqual(self.wc.check_once({"baseline": base.hex()}, False, "risky"), "busy")
+            with patch.object(self.wc.run_control, "running_pid", return_value=None), patch.object(
+                self.wc, "claude_window_id", return_value=7
+            ), patch.object(self.wc, "capture_signature", lambda w: base):
+                self.assertEqual(self.wc.check_once({"baseline": base.hex()}, False, "risky"), "unchanged")
+        self.assertEqual(runs, [])
+
+
 class TestMenuBar(unittest.TestCase):
     def setUp(self):
         import importlib.util

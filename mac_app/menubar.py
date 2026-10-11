@@ -21,6 +21,11 @@ sys.path.insert(0, str(REPO))
 
 from gui_agents.s3.utils import run_control  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import watch_claude  # noqa: E402
+
+WATCH_MINUTES = (5, 10, 15, 30)
+
 ICON = REPO / "mac_app" / "menubar_icon.png"
 SETTINGS_FILE = run_control.STATE_DIR / "menubar.json"
 LOCK_FILE = run_control.STATE_DIR / "menubar.pid"
@@ -42,6 +47,16 @@ def task_command(task: str, approval: str) -> str:
         " --provider claude_subscription --ground_provider claude_subscription"
         f" --max_steps 15 --max_model_calls 60 --approval {shlex.quote(approval)}"
         f" --task {shlex.quote(task)}"
+    )
+
+
+def watch_command(minutes, approval: str) -> str:
+    """Shell command that runs the Watch Claude loop in Terminal."""
+    return (
+        f"cd {shlex.quote(str(REPO))}"
+        " && { conda deactivate 2>/dev/null || true; }"
+        " && source .venv/bin/activate"
+        f" && python mac_app/watch_claude.py --minutes {float(minutes):g} --approval {shlex.quote(approval)}"
     )
 
 
@@ -67,6 +82,8 @@ def load_settings() -> dict:
         settings = {}
     if settings.get("approval") not in APPROVAL_LABELS:
         settings["approval"] = "risky"
+    if settings.get("watch_minutes") not in WATCH_MINUTES:
+        settings["watch_minutes"] = 15
     return settings
 
 
@@ -110,11 +127,24 @@ def main() -> None:
             approval_menu = rumps.MenuItem("Approvals")
             for item in self.approval_items.values():
                 approval_menu.add(item)
+            self.watch = rumps.MenuItem("Watch Claude → ChatGPT", callback=self.on_watch)
+            self.check_now = rumps.MenuItem("Check now", callback=self.on_check_now)
+            self.minute_items = {
+                m: rumps.MenuItem(f"Every {m} minutes", callback=self.on_minutes) for m in WATCH_MINUTES
+            }
+            minutes_menu = rumps.MenuItem("Watch interval")
+            for item in self.minute_items.values():
+                minutes_menu.add(item)
             self.menu = [
                 self.status,
                 None,
                 self.new_task,
                 self.stop_task,
+                None,
+                self.watch,
+                self.check_now,
+                minutes_menu,
+                rumps.MenuItem("Open watch log", callback=self.on_watch_log),
                 None,
                 approval_menu,
                 rumps.MenuItem("Open guide", callback=self.on_guide),
@@ -122,6 +152,7 @@ def main() -> None:
                 rumps.MenuItem("Quit menu-bar icon", callback=self.on_quit),
             ]
             self.mark_approval()
+            self.mark_minutes()
             self.refresh(None)
             self.timer = rumps.Timer(self.refresh, 1.5)
             self.timer.start()
@@ -130,13 +161,29 @@ def main() -> None:
             for mode, item in self.approval_items.items():
                 item.state = mode == settings["approval"]
 
+        def mark_minutes(self):
+            for minutes, item in self.minute_items.items():
+                item.state = minutes == settings["watch_minutes"]
+
         def refresh(self, _):
             running = run_control.running_pid() is not None
             stopping = running and run_control.STOP_FILE.exists()
-            self.title = "●" if running else None
-            self.status.title = (
-                "Stopping…" if stopping else "Working on a task" if running else "Idle"
-            )
+            watching = watch_claude.watcher_pid() is not None
+            watch_stopping = watching and watch_claude.STOP_FILE.exists()
+            self.title = "●" if running else "◎" if watching else None
+            if stopping:
+                status = "Stopping…"
+            elif running:
+                status = "Working on a task"
+            elif watch_stopping:
+                status = "Stopping the watch…"
+            elif watching:
+                status = "Watching Claude"
+            else:
+                status = "Idle"
+            self.status.title = status
+            self.watch.state = watching and not watch_stopping
+            self.check_now.set_callback(self.on_check_now if watching and not watch_stopping else None)
             self.new_task.set_callback(None if running else self.on_new_task)
             self.stop_task.set_callback(self.on_stop if running and not stopping else None)
 
@@ -166,6 +213,31 @@ def main() -> None:
                 check=False,
             )
             self.refresh(None)
+
+        def on_watch(self, _):
+            if watch_claude.watcher_pid() is not None:
+                watch_claude.STATE_DIR.mkdir(exist_ok=True)
+                watch_claude.STOP_FILE.touch()  # stops after any check in progress
+            else:
+                run_in_terminal(watch_command(settings["watch_minutes"], settings["approval"]))
+            self.refresh(None)
+
+        def on_check_now(self, _):
+            watch_claude.NOW_FILE.touch()
+
+        def on_minutes(self, sender):
+            for minutes, item in self.minute_items.items():
+                if item is sender:
+                    settings["watch_minutes"] = minutes
+            save_settings(settings)
+            self.mark_minutes()
+            if watch_claude.watcher_pid() is not None:
+                rumps.alert("Agent S", "The new interval applies the next time you turn on Watch Claude.")
+
+        def on_watch_log(self, _):
+            watch_claude.STATE_DIR.mkdir(exist_ok=True)
+            watch_claude.LOG_FILE.touch()
+            subprocess.run(["open", "-a", "Console", str(watch_claude.LOG_FILE)], check=False)
 
         def on_approval(self, sender):
             for mode, item in self.approval_items.items():

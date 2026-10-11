@@ -119,6 +119,28 @@ cd ~/Projects/Agent-S
 bash mac_app/build_menubar_app.sh          # add --login to start it when you log in
 ```
 
+### Watch Claude → ChatGPT
+
+**Watch Claude → ChatGPT** in the robot menu starts `mac_app/watch_claude.py`
+in a Terminal window (the robot shows ◎). Every 5, 10, 15 (default) or 30
+minutes (**Watch interval**) it:
+
+1. screenshots only the Claude window and compares it locally: **no Claude
+   calls**;
+2. does nothing if the conversation hasn't changed since the last handoff,
+   or is still changing (Claude still working: spinner, timer, streaming
+   text);
+3. otherwise runs Agent S once to check Claude is finished, that the reply
+   isn't already in ChatGPT, and then copy it and send it to ChatGPT. You
+   get a notification when it sends.
+
+Replies already on screen when you turn it on are not sent. **Check now**
+checks immediately and skips the "unchanged" test, which is handy for
+testing. **Open watch log** shows what it did. Turn the switch off to stop
+it after any check in progress. It skips a check while another Agent S
+task runs, and needs the Claude window on the current desktop (not
+minimized).
+
 The builder installs the `rumps` library into `.venv` if needed. Tasks run
 in Terminal, so no new permissions are needed. Opening the app again while
 the icon is already showing does nothing.
