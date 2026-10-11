@@ -23,7 +23,13 @@ from gui_agents.s3.core.claude_subscription import (
     usage_summary,
 )
 from gui_agents.s3.utils.local_env import LocalEnv
-from gui_agents.s3.utils.action_summary import APPROVAL_MODES, describe_action, needs_approval
+from gui_agents.s3.utils.action_summary import (
+    APPROVAL_MODES,
+    describe_action,
+    is_terminal_app,
+    keyboard_without_click,
+    needs_approval,
+)
 from gui_agents.s3.utils.run_control import finish_run, start_run, stop_reason
 
 current_platform = platform.system().lower()
@@ -152,6 +158,21 @@ def _frontmost_app_path():
         return None
 
 
+def discard_typed_input():
+    """Drop keystrokes that reached this Terminal during the run.
+
+    Otherwise the shell reads them after Agent S exits and runs each line
+    (for example, text pasted into the wrong window) as a command.
+    """
+    try:
+        import termios
+
+        if sys.stdin.isatty():
+            termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+    except Exception:
+        pass
+
+
 def show_permission_dialog(message: str):
     """Show a platform-specific permission dialog and return True if approved."""
     if platform.system() == "Darwin":
@@ -164,9 +185,13 @@ def show_permission_dialog(message: str):
         approved = subprocess.run(["osascript", "-e", script], capture_output=True).returncode == 0
         if approved and front:
             # The dialog took focus; give it back so typing and hotkeys reach
-            # the app that was in front when the screenshot was taken.
+            # the app that was in front when the screenshot was taken. `open`
+            # returns before activation finishes, so wait until it really has.
             subprocess.run(["open", "-a", front], capture_output=True)
-            time.sleep(0.7)
+            deadline = time.time() + 3
+            while _frontmost_app_path() != front and time.time() < deadline:
+                time.sleep(0.1)
+            time.sleep(0.3)
         return approved
     elif platform.system() == "Linux":
         result = subprocess.run(
@@ -268,6 +293,14 @@ def run_agent(
             if needs_approval(approval, code[0]) and not show_permission_dialog(describe_action(info, code[0])):
                 print("🚫 Action declined; stopping this task.")
                 break
+
+            # Keys with no click first go to the front app. If that is the
+            # Terminal running Agent S, the shell would receive them (and run
+            # pasted text as commands), so skip the action.
+            if keyboard_without_click(code[0]) and is_terminal_app(_frontmost_app_path()):
+                print("⚠️  Skipped: Terminal is in front, so these keys would go to the shell, not the target app.")
+                time.sleep(1.0)
+                continue
             try:
                 exec(code[0])
             except SubscriptionStop as stop:  # grounding calls happen inside exec'd code
@@ -490,6 +523,7 @@ def main():
             run_agent(agent, instruction, scaled_width, scaled_height, args.max_steps, approval)
         finally:
             finish_run()
+            discard_typed_input()
         if use_subscription:
             used = usage_summary()
             print(

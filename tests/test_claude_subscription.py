@@ -460,6 +460,32 @@ class TestMacTyping(GuardBypass):
         self.assertIn("Never use sudo", prompt)
 
 
+class TestTerminalKeyGuard(unittest.TestCase):
+    def test_keyboard_without_click(self):
+        from gui_agents.s3.agents.grounding import _macos_open_code
+        from gui_agents.s3.utils.action_summary import keyboard_without_click
+
+        # From the failed ChatGPT -> Claude run: these went to whatever app was in front.
+        self.assertTrue(keyboard_without_click("import pyautogui; pyautogui.hotkey('cmd', 'v')"))
+        self.assertTrue(keyboard_without_click("import pyautogui; pyautogui.hotkey('backspace')"))
+        self.assertTrue(keyboard_without_click("import pyautogui; pyautogui.write('12*7=')"))
+        # A click first selects the target window, so these are fine.
+        self.assertFalse(keyboard_without_click(
+            "import pyautogui; pyautogui.click(1297, 977); pyautogui.hotkey('command', 'a'); "
+            "pyautogui.press('backspace'); pyautogui.write(''); "
+        ))
+        self.assertFalse(keyboard_without_click("import pyautogui; pyautogui.click(708, 185, clicks=1, button='left'); "))
+        self.assertFalse(keyboard_without_click(_macos_open_code("Claude")))
+
+    def test_is_terminal_app(self):
+        from gui_agents.s3.utils.action_summary import is_terminal_app
+
+        self.assertTrue(is_terminal_app("/System/Applications/Utilities/Terminal.app"))
+        self.assertTrue(is_terminal_app("/Applications/iTerm.app/"))
+        self.assertFalse(is_terminal_app("/Applications/Claude.app"))
+        self.assertFalse(is_terminal_app(None))
+
+
 class TestMenuBar(unittest.TestCase):
     def setUp(self):
         import importlib.util

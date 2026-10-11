@@ -30,6 +30,27 @@ def action_warnings(code: str) -> list:
     return warnings
 
 
+_KEY_CALL = re.compile(r"pyautogui\.(hotkey|press|write|typewrite|keyDown|keyUp)\(")
+_TERMINAL_APPS = {"Terminal.app", "iTerm.app"}
+
+
+def keyboard_without_click(code: str) -> bool:
+    """True if the action sends keystrokes without first clicking a target.
+
+    Such keys go to whichever app is in front, so they must never be sent
+    while the Terminal running Agent S is in front (the shell would run them).
+    """
+    keys = _KEY_CALL.search(code)
+    if not keys:
+        return False
+    click = re.search(r"pyautogui\.(click|doubleClick|tripleClick)\(", code)
+    return not (click and click.start() < keys.start())
+
+
+def is_terminal_app(app_path) -> bool:
+    return bool(app_path) and app_path.rstrip("/").rsplit("/", 1)[-1] in _TERMINAL_APPS
+
+
 def describe_action(info, code: str) -> str:
     """Dialog text: what Agent S plans, the action it chose, then the code."""
     info = info if isinstance(info, dict) else {}
