@@ -87,6 +87,13 @@ if [[ -f "$ICON_SRC" ]]; then
     sips -z $((size * 2)) $((size * 2)) "$ICON_SRC" --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
   done
   iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/applet.icns"
+  # Recent macOS takes the icon from Assets.car (named by CFBundleIconName)
+  # before applet.icns, so remove both to make CFBundleIconFile win.
+  rm -f "$APP/Contents/Resources/Assets.car"
+  /usr/libexec/PlistBuddy -c "Delete :CFBundleIconName" "$APP/Contents/Info.plist" 2>/dev/null || true
+  # Changing resources breaks osacompile's ad-hoc signature; re-sign so macOS
+  # (and its Automation permission for Terminal) keeps trusting the app.
+  codesign --force --sign - "$APP" 2>/dev/null || true
   touch "$APP"
 fi
 
@@ -99,5 +106,6 @@ if [[ "${1:-}" == "--dock" ]]; then
   echo "Added to the Dock."
 else
   echo "To keep it in the Dock: open it once, then right-click its Dock icon > Options > Keep in Dock."
+  echo "If the Dock still shows an old icon, run: killall Dock"
   open -R "$APP"
 fi
