@@ -47,3 +47,15 @@ def describe_action(info, code: str) -> str:
     parts.append("Code that will run:\n" + _clip(code, 600))
     parts.append("Run it?")
     return "\n\n".join(parts)
+
+
+APPROVAL_MODES = ("always", "risky", "never")
+
+
+def needs_approval(mode: str, code: str) -> bool:
+    """always: every action; risky: only actions with warnings; never: none."""
+    if mode == "always":
+        return True
+    if mode == "risky":
+        return bool(action_warnings(code))
+    return False
