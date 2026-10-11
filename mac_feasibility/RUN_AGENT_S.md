@@ -100,6 +100,29 @@ you (this restarts the Dock). The first time, macOS asks whether "Agent S"
 may control Terminal; click **OK**. Re-run the builder if you move the
 repo folder.
 
+## Menu-bar icon
+
+`mac_app/build_menubar_app.sh` builds **Agent S Menu Bar.app** and opens it.
+The Agent S robot appears in the menu bar (top right), and its menu has:
+
+- the current state: **Idle**, **Working on a task** (the robot shows a
+  ●), or **Stopping…**;
+- **New task…** (⌘N): asks what to do, then runs it in Terminal with the
+  same settings as the Dock app;
+- **Stop task**: same as the Dock app's Stop;
+- **Approvals**: risky only (default), every action, or never. Your choice
+  is remembered in `~/.agent_s/menubar.json`;
+- **Open guide** and **Quit menu-bar icon**.
+
+```bash
+cd ~/Projects/Agent-S
+bash mac_app/build_menubar_app.sh          # add --login to start it when you log in
+```
+
+The builder installs the `rumps` library into `.venv` if needed. Tasks run
+in Terminal, so no new permissions are needed. Opening the app again while
+the icon is already showing does nothing.
+
 ## Options
 
 - `--model sonnet --ground_model sonnet`: a smaller model that may stretch

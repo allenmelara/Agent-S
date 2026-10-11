@@ -1,8 +1,9 @@
 """Ways to stop an Agent S run that is working on its own (cli_app.py).
 
 - Move the mouse into the top-left corner of the screen.
-- Click the Agent S app in the Dock again and choose Stop. The app creates
-  ~/.agent_s/stop, which the run checks before every step and every action.
+- Click the Agent S app in the Dock again and choose Stop, or choose Stop
+  task in the menu-bar icon. Both create ~/.agent_s/stop, which the run
+  checks before every step and every action.
 - Ctrl+C in the Terminal window, as before.
 """
 
@@ -29,6 +30,22 @@ def finish_run() -> None:
             RUNNING_FILE.unlink()
     except OSError:
         pass
+
+
+def running_pid() -> int | None:
+    """PID of the active run, or None if no run is active (stale files ignored)."""
+    try:
+        pid = int(RUNNING_FILE.read_text().strip())
+        os.kill(pid, 0)
+        return pid
+    except (OSError, ValueError):
+        return None
+
+
+def request_stop() -> None:
+    """Ask the active run to stop before its next step or action."""
+    STATE_DIR.mkdir(exist_ok=True)
+    STOP_FILE.touch()
 
 
 def stop_reason(mouse_position) -> str | None:

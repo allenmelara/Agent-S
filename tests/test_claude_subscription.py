@@ -460,6 +460,75 @@ class TestMacTyping(GuardBypass):
         self.assertIn("Never use sudo", prompt)
 
 
+class TestMenuBar(unittest.TestCase):
+    def setUp(self):
+        import importlib.util
+        import tempfile
+        from pathlib import Path
+
+        from gui_agents.s3.utils import run_control as rc
+
+        path = Path(__file__).resolve().parent.parent / "mac_app" / "menubar.py"
+        spec = importlib.util.spec_from_file_location("agent_s_menubar", path)
+        self.mb = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.mb)
+
+        self.tmp = tempfile.TemporaryDirectory()
+        state = Path(self.tmp.name) / ".agent_s"
+        self.rc = rc
+        self.patches = [
+            patch.object(rc, "STATE_DIR", state),
+            patch.object(rc, "RUNNING_FILE", state / "running.pid"),
+            patch.object(rc, "STOP_FILE", state / "stop"),
+            patch.object(self.mb, "SETTINGS_FILE", state / "menubar.json"),
+            patch.object(self.mb, "LOCK_FILE", state / "menubar.pid"),
+        ]
+        for p in self.patches:
+            p.start()
+        self.state = state
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+        self.tmp.cleanup()
+
+    def test_task_command_quotes_the_task(self):
+        import shlex
+
+        task = """Write "hi" in Notes; rm -rf ~ && echo $(whoami) `x` it's"""
+        cmd = self.mb.task_command(task, "risky")
+        words = shlex.split(cmd)
+        self.assertEqual(words[words.index("--task") + 1], task)  # one literal argument
+        self.assertEqual(words[words.index("--approval") + 1], "risky")
+        self.assertIn("--provider", words)
+        self.assertIn("claude_subscription", words)
+
+    def test_running_and_stop(self):
+        self.assertIsNone(self.rc.running_pid())
+        self.rc.start_run()
+        self.assertEqual(self.rc.running_pid(), os.getpid())
+        self.rc.request_stop()
+        self.assertIn("Agent S app", self.rc.stop_reason(lambda: (500, 500)))
+        self.rc.finish_run()
+        self.assertIsNone(self.rc.running_pid())
+        self.state.mkdir(exist_ok=True)
+        (self.state / "running.pid").write_text("999999999")  # stale: process is gone
+        self.assertIsNone(self.rc.running_pid())
+
+    def test_settings_default_and_save(self):
+        self.assertEqual(self.mb.load_settings()["approval"], "risky")
+        self.mb.save_settings({"approval": "always"})
+        self.assertEqual(self.mb.load_settings()["approval"], "always")
+        self.mb.save_settings({"approval": "bogus"})
+        self.assertEqual(self.mb.load_settings()["approval"], "risky")
+
+    def test_single_copy_lock(self):
+        self.assertFalse(self.mb.already_open())  # claims the lock for this process
+        self.assertFalse(self.mb.already_open())  # our own pid is not "another copy"
+        (self.state / "menubar.pid").write_text(str(os.getppid()))  # a live, different process
+        self.assertTrue(self.mb.already_open())
+
+
 class TestGuard(unittest.TestCase):
     def setUp(self):
         cs._guard_passed = False

@@ -8,3 +8,4 @@ openai      # imported by gui_agents/s3/core/engine.py; not called in this mode
 anthropic   # same; no API key is used
 pytesseract # also needs `brew install tesseract` for text-span actions
 pyperclip   # typing non-ASCII text (accents, emoji) via the clipboard
+rumps; platform_system == "Darwin"  # menu-bar icon (mac_app/menubar.py)
