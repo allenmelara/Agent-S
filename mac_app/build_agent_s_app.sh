@@ -91,6 +91,11 @@ if [[ -f "$ICON_SRC" ]]; then
   # before applet.icns, so remove both to make CFBundleIconFile win.
   rm -f "$APP/Contents/Resources/Assets.car"
   /usr/libexec/PlistBuddy -c "Delete :CFBundleIconName" "$APP/Contents/Info.plist" 2>/dev/null || true
+  # Name it, so macOS permission prompts say "Agent S" instead of "applet".
+  for key in CFBundleName CFBundleDisplayName; do
+    /usr/libexec/PlistBuddy -c "Set :$key Agent S" "$APP/Contents/Info.plist" 2>/dev/null ||
+      /usr/libexec/PlistBuddy -c "Add :$key string Agent S" "$APP/Contents/Info.plist"
+  done
   # Changing resources breaks osacompile's ad-hoc signature; re-sign so macOS
   # (and its Automation permission for Terminal) keeps trusting the app.
   codesign --force --sign - "$APP" 2>/dev/null || true

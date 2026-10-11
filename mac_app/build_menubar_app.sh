@@ -56,6 +56,11 @@ if [[ -f "$ICON_SRC" ]]; then
 fi
 # No Dock icon while it starts the background process.
 /usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$APP/Contents/Info.plist" 2>/dev/null || true
+# Name it, so macOS permission prompts say "Agent S Menu Bar" instead of "applet".
+for key in CFBundleName CFBundleDisplayName; do
+  /usr/libexec/PlistBuddy -c "Set :$key Agent S Menu Bar" "$APP/Contents/Info.plist" 2>/dev/null ||
+    /usr/libexec/PlistBuddy -c "Add :$key string Agent S Menu Bar" "$APP/Contents/Info.plist"
+done
 codesign --force --sign - "$APP" 2>/dev/null || true
 touch "$APP"
 

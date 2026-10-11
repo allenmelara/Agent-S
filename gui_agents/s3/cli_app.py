@@ -476,7 +476,10 @@ def main():
         set_call_budget(args.max_model_calls if use_subscription else None)
         start_run()
         if approval != "always":
-            notice = "Working on its own. To stop: move the mouse to the top-left corner, or click Agent S in the Dock."
+            notice = (
+                "Working on its own. To stop: move the mouse to the top-left corner, "
+                "or use Stop in the Agent S menu-bar icon or Dock app."
+            )
             print(f"🤖 {notice}")
             if platform.system() == "Darwin":
                 subprocess.run(
