@@ -2,10 +2,12 @@
 # Build "Agent S.app" in ~/Applications so Agent S can be started from the Dock.
 #
 # Opening the app asks what Agent S should do, then runs it in a Terminal
-# window with the claude_subscription settings (your Claude Max login, no API
-# key, confirmation dialog before every action). It runs inside Terminal on
-# purpose: Terminal already has the Accessibility and Screen Recording
-# permissions Agent S needs, and you can watch the log and stop it with Ctrl+C.
+# window with the claude_subscription settings: your Claude Max login, no API
+# key, and --approval risky (it works on its own and only asks before shell
+# commands, deleting files or quitting apps). Clicking the app again while a
+# task runs offers to stop it. It runs inside Terminal on purpose: Terminal
+# already has the Accessibility and Screen Recording permissions Agent S
+# needs, and you can watch the log and stop it with Ctrl+C.
 #
 # Usage (from the repo):  bash mac_app/build_agent_s_app.sh [--dock]
 #   --dock   also add the app to the Dock (restarts the Dock once)
@@ -34,8 +36,25 @@ trap 'rm -rf "$WORK"' EXIT
 
 cat > "$WORK/agent_s.applescript" <<APPLESCRIPT
 set repoPath to "$REPO_AS"
+set stateDir to (POSIX path of (path to home folder)) & ".agent_s/"
+
+-- If a task is already running, offer to stop it instead of starting another.
+set isRunning to false
+try
+	do shell script "kill -0 \$(cat " & quoted form of (stateDir & "running.pid") & ")"
+	set isRunning to true
+end try
+if isRunning then
+	display dialog "Agent S is working on a task." & return & return & "Stop it now?" with title "Agent S" ¬
+		buttons {"Keep running", "Stop"} default button "Stop" cancel button "Keep running"
+	do shell script "touch " & quoted form of (stateDir & "stop")
+	display notification "Stopping before its next action." with title "Agent S"
+	return
+end if
+
 set promptText to "What should Agent S do on your Mac?" & return & return & ¬
-	"It uses your Claude Max login (no API key) and asks before every action."
+	"It works on its own with your Claude Max login (no API key), and only asks before risky actions: shell commands, deleting files, quitting apps." & return & return & ¬
+	"To stop it: move the mouse to the top-left corner, or click Agent S in the Dock again."
 set dialogResult to display dialog promptText default answer "" with title "Agent S" ¬
 	buttons {"Cancel", "Start"} default button "Start" cancel button "Cancel"
 set taskText to text returned of dialogResult
@@ -46,7 +65,7 @@ set cmd to "cd " & quoted form of repoPath & ¬
 	" && source .venv/bin/activate" & ¬
 	" && python -m gui_agents.s3.cli_app" & ¬
 	" --provider claude_subscription --ground_provider claude_subscription" & ¬
-	" --max_steps 15 --max_model_calls 60" & ¬
+	" --max_steps 15 --max_model_calls 60 --approval risky" & ¬
 	" --task " & quoted form of taskText
 
 tell application "Terminal"

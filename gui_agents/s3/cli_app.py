@@ -23,7 +23,8 @@ from gui_agents.s3.core.claude_subscription import (
     usage_summary,
 )
 from gui_agents.s3.utils.local_env import LocalEnv
-from gui_agents.s3.utils.action_summary import describe_action
+from gui_agents.s3.utils.action_summary import APPROVAL_MODES, describe_action, needs_approval
+from gui_agents.s3.utils.run_control import finish_run, start_run, stop_reason
 
 current_platform = platform.system().lower()
 
@@ -189,7 +190,7 @@ def run_agent(
     scaled_width: int,
     scaled_height: int,
     max_steps: int = 15,
-    confirm_actions: bool = False,
+    approval: str = "never",
 ):
     global paused
     obs = {}
@@ -199,6 +200,10 @@ def run_agent(
         # Check if we're in paused state and wait
         while paused:
             time.sleep(0.1)
+        reason = stop_reason(pyautogui.position)
+        if reason:
+            print(f"\n⛔ Stopped: {reason}.")
+            break
         # Get screen shot using pyautogui
         screenshot = pyautogui.screenshot()
         screenshot = screenshot.resize((scaled_width, scaled_height), Image.LANCZOS)
@@ -253,14 +258,23 @@ def run_agent(
             while paused:
                 time.sleep(0.1)
 
+            # Last chance to stop before anything happens on screen
+            reason = stop_reason(pyautogui.position)
+            if reason:
+                print(f"\n⛔ Stopped: {reason}.")
+                break
+
             # Ask for permission before executing
-            if confirm_actions and not show_permission_dialog(describe_action(info, code[0])):
+            if needs_approval(approval, code[0]) and not show_permission_dialog(describe_action(info, code[0])):
                 print("🚫 Action declined; stopping this task.")
                 break
             try:
                 exec(code[0])
             except SubscriptionStop as stop:  # grounding calls happen inside exec'd code
                 print(f"\n⛔ Stopped: {stop}")
+                break
+            except pyautogui.FailSafeException:
+                print("\n⛔ Stopped: mouse moved to a screen corner.")
                 break
             time.sleep(1.0)
 
@@ -382,9 +396,16 @@ def main():
         help="claude_subscription only: start a new Claude session for every call instead of reusing one per role (slower)",
     )
     parser.add_argument(
+        "--approval",
+        choices=APPROVAL_MODES,
+        default=None,
+        help="When to ask before an action: always, risky (only shell commands, deleting files or "
+        "quitting apps), or never. Default: always with claude_subscription, never otherwise",
+    )
+    parser.add_argument(
         "--no_confirm",
         action="store_true",
-        help="claude_subscription only: run actions without a confirmation dialog",
+        help="Same as --approval never",
     )
     parser.add_argument(
         "--task",
@@ -437,7 +458,13 @@ def main():
     if args.provider == "claude_subscription":
         engine_params["persistent"] = not args.fresh_sessions
 
-    confirm_actions = use_subscription and not args.no_confirm
+    if args.approval:
+        approval = args.approval
+    elif args.no_confirm or not use_subscription:
+        approval = "never"
+    else:
+        approval = "always"
+
     if use_subscription:
         try:
             ensure_subscription_only()
@@ -447,7 +474,19 @@ def main():
 
     def run_task(instruction):
         set_call_budget(args.max_model_calls if use_subscription else None)
-        run_agent(agent, instruction, scaled_width, scaled_height, args.max_steps, confirm_actions)
+        start_run()
+        if approval != "always":
+            notice = "Working on its own. To stop: move the mouse to the top-left corner, or click Agent S in the Dock."
+            print(f"🤖 {notice}")
+            if platform.system() == "Darwin":
+                subprocess.run(
+                    ["osascript", "-e", f'display notification "{notice}" with title "Agent S"'],
+                    capture_output=True,
+                )
+        try:
+            run_agent(agent, instruction, scaled_width, scaled_height, args.max_steps, approval)
+        finally:
+            finish_run()
         if use_subscription:
             used = usage_summary()
             print(

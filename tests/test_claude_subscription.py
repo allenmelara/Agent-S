@@ -379,6 +379,54 @@ class TestActionSummary(unittest.TestCase):
         self.assertTrue(line.endswith("…"))
 
 
+class TestApprovalAndStop(unittest.TestCase):
+    def test_approval_modes(self):
+        from gui_agents.s3.agents.grounding import _macos_open_code
+        from gui_agents.s3.utils.action_summary import needs_approval
+
+        click = "import pyautogui; pyautogui.click(427, 715, clicks=1, button='left');"
+        shell = "import subprocess; subprocess.run(['ls'])"
+        for code, risky in ((click, False), (_macos_open_code("Calculator"), False), (shell, True)):
+            self.assertTrue(needs_approval("always", code))
+            self.assertEqual(needs_approval("risky", code), risky)
+            self.assertFalse(needs_approval("never", code))
+
+    def test_stop_file_and_corner(self):
+        import tempfile
+        from pathlib import Path
+
+        from gui_agents.s3.utils import run_control as rc
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / ".agent_s"
+            with patch.object(rc, "STATE_DIR", state), patch.object(
+                rc, "RUNNING_FILE", state / "running.pid"
+            ), patch.object(rc, "STOP_FILE", state / "stop"):
+                (state).mkdir()
+                (state / "stop").touch()  # stale request from an earlier run
+                rc.start_run()
+                self.assertFalse((state / "stop").exists())
+                self.assertEqual((state / "running.pid").read_text(), str(os.getpid()))
+
+                self.assertIsNone(rc.stop_reason(lambda: (700, 400)))
+                self.assertIn("top-left corner", rc.stop_reason(lambda: (0, 1)))
+                (state / "stop").touch()  # what the Dock app does
+                self.assertIn("Agent S app", rc.stop_reason(lambda: (700, 400)))
+
+                rc.finish_run()
+                self.assertFalse((state / "running.pid").exists())
+                self.assertFalse((state / "stop").exists())
+
+    def test_unreadable_mouse_does_not_stop(self):
+        from gui_agents.s3.utils import run_control as rc
+
+        def broken():
+            raise RuntimeError("no display")
+
+        with patch.object(rc, "STOP_FILE", rc.STATE_DIR / "definitely-not-there"):
+            self.assertIsNone(rc.stop_reason(broken))
+
+
 class TestGuard(unittest.TestCase):
     def setUp(self):
         cs._guard_passed = False

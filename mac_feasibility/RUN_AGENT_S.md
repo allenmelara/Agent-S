@@ -75,9 +75,19 @@ and after a task to see what it really costs.
 
 `mac_app/build_agent_s_app.sh` builds **Agent S.app** in `~/Applications`.
 Opening it asks what Agent S should do. It then runs Agent S in a Terminal
-window with the settings above (Max login, a dialog before every action,
-15 steps, 60 calls). Running inside Terminal reuses the permissions you
-already gave Terminal, and you can watch the log and stop it with Ctrl+C.
+window with your Max login, 15 steps, 60 calls and `--approval risky`. It
+works on its own and only asks before risky actions: shell commands,
+deleting files, quitting apps. Running inside Terminal reuses the
+permissions you already gave Terminal.
+
+**To stop a task**, use any of these:
+- move the mouse into the **top-left corner** of the screen;
+- **click Agent S in the Dock again** and choose **Stop**;
+- press Ctrl+C in its Terminal window.
+
+The first two take effect before the next action, within a few seconds.
+
+**After pulling an update that changes the app, re-run the builder.**
 
 ```bash
 cd ~/Projects/Agent-S
@@ -98,8 +108,10 @@ repo folder.
   call. The effect on quality is untested.
 - `--fresh_sessions`: start a new Claude session for every call (the
   slower, original behaviour).
-- `--no_confirm`: skips the dialogs. Only use it after several supervised
-  runs.
+- `--approval always|risky|never`: when to ask before an action. The
+  command line defaults to `always`; the Dock app uses `risky`.
+  `--no_confirm` is the same as `--approval never`. The stop controls
+  above work in every mode.
 - Leave `--enable_local_env` off. It lets the agent run arbitrary code
   without the action dialog.
 
