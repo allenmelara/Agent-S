@@ -25,12 +25,12 @@ def action_warnings(code: str) -> list:
         warnings.append("Runs a shell command on your Mac.")
     if re.search(r"\b(rm|rmdir|unlink|shutil\.rmtree|os\.remove)\b", code):
         warnings.append("May delete files.")
-    if re.search(r"hotkey\([^)]*'command'[^)]*'q'", code):
+    if re.search(r"(hotkey|press_combo)\([^)]*'(command|cmd)'[^)]*'q'", code):
         warnings.append("Quits an app (Command+Q).")
     return warnings
 
 
-_KEY_CALL = re.compile(r"pyautogui\.(hotkey|press|write|typewrite|keyDown|keyUp)\(")
+_KEY_CALL = re.compile(r"pyautogui\.(hotkey|press|write|typewrite|keyDown|keyUp)\(|press_combo\(\[")
 _TERMINAL_APPS = {"Terminal.app", "iTerm.app"}
 
 

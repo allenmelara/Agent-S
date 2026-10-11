@@ -486,6 +486,72 @@ class TestTerminalKeyGuard(unittest.TestCase):
         self.assertFalse(is_terminal_app(None))
 
 
+class TestMacKeys(unittest.TestCase):
+    def fake_quartz(self, events):
+        import types
+
+        q = types.SimpleNamespace(
+            kCGEventSourceStateHIDSystemState=1,
+            kCGHIDEventTap=0,
+            kCGEventFlagMaskCommand=1 << 20,
+            kCGEventFlagMaskShift=1 << 17,
+            kCGEventFlagMaskAlternate=1 << 19,
+            kCGEventFlagMaskControl=1 << 18,
+        )
+        q.CGEventSourceCreate = lambda state: "src"
+        q.CGEventCreateKeyboardEvent = lambda src, code, down: {"code": code, "down": down}
+        q.CGEventSetFlags = lambda event, flags: event.update(flags=flags)
+        q.CGEventPost = lambda tap, event: events.append(event)
+        return q
+
+    def test_command_v_carries_the_command_flag(self):
+        from gui_agents.s3.utils import mac_keys
+
+        events = []
+        with patch.dict("sys.modules", {"Quartz": self.fake_quartz(events)}), patch.object(mac_keys.time, "sleep"):
+            mac_keys.press_combo(["cmd", "v"])
+        cmd = 1 << 20
+        self.assertEqual(
+            events,
+            [
+                {"code": 55, "down": True, "flags": cmd},  # Command down
+                {"code": 9, "down": True, "flags": cmd},  # V down WITH Command flag
+                {"code": 9, "down": False, "flags": cmd},
+                {"code": 55, "down": False, "flags": 0},  # Command up
+            ],
+        )
+
+    def test_unknown_key_falls_back_to_pyautogui(self):
+        from gui_agents.s3.utils import mac_keys
+
+        calls = []
+        fake_pyautogui = type("P", (), {"hotkey": staticmethod(lambda *k, **kw: calls.append(k))})
+        with patch.dict("sys.modules", {"pyautogui": fake_pyautogui}):
+            mac_keys.press_combo(["command", "f13"])
+        self.assertEqual(calls, [("command", "f13")])
+
+    def test_mac_actions_use_press_combo(self):
+        from gui_agents.s3.agents.grounding import OSWorldACI
+        from gui_agents.s3.utils.action_summary import action_warnings, keyboard_without_click
+
+        params = {"engine_type": "claude_subscription", "model": None, "persistent": False}
+        ground = dict(params, grounding_width=100, grounding_height=100)
+        mac = OSWorldACI(env=None, platform="darwin", engine_params_for_generation=params,
+                         engine_params_for_grounding=ground, width=100, height=100)
+        code = mac.hotkey(["cmd", "v"])
+        self.assertIn("press_combo(['cmd', 'v'])", code)
+        self.assertNotIn("pyautogui.hotkey", code)
+        self.assertTrue(keyboard_without_click(code))  # still blocked while Terminal is in front
+        self.assertIn("Quits an app (Command+Q).", action_warnings(mac.hotkey(["command", "q"])))
+        typed = mac.type(text="café", overwrite=True)
+        self.assertIn("press_combo(['command', 'a'])", typed)
+        self.assertIn("press_combo(['command', 'v'])", typed)
+        self.assertNotIn("pyautogui.hotkey", typed)
+        linux = OSWorldACI(env=None, platform="linux", engine_params_for_generation=params,
+                           engine_params_for_grounding=ground, width=100, height=100)
+        self.assertEqual(linux.hotkey(["ctrl", "v"]), "import pyautogui; pyautogui.hotkey('ctrl', 'v')")
+
+
 class TestWatchClaude(unittest.TestCase):
     def setUp(self):
         import importlib.util
@@ -568,20 +634,40 @@ class TestWatchClaude(unittest.TestCase):
     def test_check_once_relays_only_new_settled_reply(self):
         base, new = self.window(5), self.window(12)
         state = {"baseline": base.hex()}
-        captures = iter([new, new])
-        clip = iter(["old", "new-reply"])
         runs = []
-        with patch.object(self.wc, "claude_window_id", return_value=7), patch.object(
-            self.wc, "capture_signature", lambda w: next(captures)
-        ), patch.object(self.wc, "clipboard_hash", lambda: next(clip)), patch.object(
-            self.wc.subprocess, "run", lambda cmd, **kw: runs.append(cmd)
-        ), patch.object(self.wc, "SETTLE_SECONDS", 0), patch.object(self.wc, "notify"), patch.object(
-            self.wc.run_control, "running_pid", return_value=None
-        ):
-            self.assertEqual(self.wc.check_once(state, forced=False, approval="risky"), "sent")
-        self.assertEqual(len(runs), 1)
+
+        def check(returncode, clip_before, clip_after):
+            captures = iter([new, new])
+            clip = iter([clip_before, clip_after])
+
+            class Done:
+                pass
+
+            def run(cmd, **kw):
+                runs.append(cmd)
+                result = Done()
+                result.returncode = returncode
+                return result
+
+            with patch.object(self.wc, "claude_window_id", return_value=7), patch.object(
+                self.wc, "capture_signature", lambda w: next(captures)
+            ), patch.object(self.wc, "clipboard_hash", lambda: next(clip)), patch.object(
+                self.wc.subprocess, "run", run
+            ), patch.object(self.wc, "SETTLE_SECONDS", 0), patch.object(self.wc, "notify"), patch.object(
+                self.wc.run_control, "running_pid", return_value=None
+            ):
+                return self.wc.check_once(state, forced=False, approval="risky")
+
+        # Copied but the paste failed (the run that logged a false "Handoff done"): retry later.
+        self.assertEqual(check(1, "old", "new-reply"), "failed")
+        self.assertEqual(state["baseline"], base.hex())
+        self.assertNotIn("last_sent", state)
+        # Finished and copied: sent.
+        self.assertEqual(check(0, "old", "new-reply"), "sent")
         self.assertEqual(state["baseline"], new.hex())
         self.assertEqual(state["last_sent"], "new-reply")
+        self.assertIn("--quiet_done", runs[0])
+        self.assertEqual(len(runs), 2)
 
     def test_check_once_skips_when_busy_or_unchanged(self):
         base = self.window(5)

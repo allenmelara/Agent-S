@@ -52,8 +52,9 @@ RELAY_TASK = (
     "progress indicator is showing), call done without doing anything. Otherwise look at the ChatGPT "
     "app: if my most recent message there already contains the same text as Claude's latest reply, "
     "call done without doing anything. Otherwise copy Claude's latest reply using the copy button "
-    "below it, click inside the message box at the bottom of the ChatGPT app, paste with Command+V, "
-    "check that the box contains the copied text, and press Enter to send it. Then stop."
+    "below it, click inside the message box at the bottom of the ChatGPT app, and if that box still "
+    "holds leftovers from an earlier attempt (a stray character or a partial paste), clear them. Paste "
+    "with Command+V, check that the box contains the copied text, and press Enter to send it. Then stop."
 )
 
 
@@ -108,7 +109,7 @@ def relay_command(approval: str) -> list:
     return [
         sys.executable, "-m", "gui_agents.s3.cli_app",
         "--provider", "claude_subscription", "--ground_provider", "claude_subscription",
-        "--approval", approval, "--max_steps", "10", "--max_model_calls", "30",
+        "--approval", approval, "--max_steps", "12", "--max_model_calls", "40", "--quiet_done",
         "--task", RELAY_TASK,
     ]
 
@@ -219,9 +220,10 @@ def check_once(state: dict, forced: bool, approval: str) -> str:
         return verdict
 
     before = clipboard_hash()
-    subprocess.run(relay_command(approval), cwd=REPO)
+    finished = subprocess.run(relay_command(approval), cwd=REPO).returncode == 0
     after = clipboard_hash()
-    if after and after != before:
+    copied = bool(after) and after != before
+    if finished and copied:
         if after == state.get("last_sent"):
             log("Warning: the copied text matches the previous handoff; it may have been sent twice.")
         state.update(last_sent=after, baseline=second.hex())
@@ -229,6 +231,11 @@ def check_once(state: dict, forced: bool, approval: str) -> str:
         log("Handoff done.")
         notify("Sent Claude's latest reply to ChatGPT.")
         return "sent"
+    if copied:
+        # Copied but Agent S didn't finish (paste or send failed): retry next check.
+        log("Handoff NOT finished: the reply was copied but not sent. Will try again next check.")
+        notify("Couldn't finish sending Claude's reply to ChatGPT; will retry. Check ChatGPT's message box.")
+        return "failed"
     log("Agent S didn't copy anything (Claude may still be working, or it was already sent).")
     return "nothing-copied"
 

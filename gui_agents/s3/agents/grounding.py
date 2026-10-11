@@ -479,16 +479,19 @@ class OSWorldACI(ACI):
             x, y = self.resize_coordinates(coords1)
             command += f"pyautogui.click({x}, {y}); "
 
+        mac = self.platform == "darwin"
+        if mac and (overwrite or has_unicode):
+            command += "from gui_agents.s3.utils.mac_keys import press_combo; "
+
         if overwrite:
             command += (
-                f"pyautogui.hotkey({repr('command' if self.platform == 'darwin' else 'ctrl')}, 'a'); "
-                "pyautogui.press('backspace'); "
-            )
+                "press_combo(['command', 'a']); " if mac else "pyautogui.hotkey('ctrl', 'a'); "
+            ) + "pyautogui.press('backspace'); "
 
         if has_unicode:
             # Use clipboard method for Unicode characters
             command += f"pyperclip.copy({repr(text)}); "
-            command += f"pyautogui.hotkey({repr('command' if self.platform == 'darwin' else 'ctrl')}, 'v'); "
+            command += "press_combo(['command', 'v']); " if mac else "pyautogui.hotkey('ctrl', 'v'); "
         else:
             # Use regular pyautogui.write() for ASCII text
             command += f"pyautogui.write({repr(text)}); "
@@ -659,6 +662,9 @@ class OSWorldACI(ACI):
         Args:
             keys:List the keys to press in combination in a list format (e.g. ['ctrl', 'c'])
         """
+        if self.platform == "darwin":
+            # pyautogui.hotkey loses the Command flag on macOS (Cmd+V typed "v").
+            return f"from gui_agents.s3.utils.mac_keys import press_combo; press_combo({[str(k) for k in keys]!r})"
         # add quotes around the keys
         keys = [f"'{key}'" for key in keys]
         return f"import pyautogui; pyautogui.hotkey({', '.join(keys)})"

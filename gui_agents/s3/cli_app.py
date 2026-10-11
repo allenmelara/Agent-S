@@ -216,7 +216,9 @@ def run_agent(
     scaled_height: int,
     max_steps: int = 15,
     approval: str = "never",
+    quiet_done: bool = False,
 ):
+    """Run one task. Returns 'done', 'fail', 'stopped' or 'out_of_steps'."""
     global paused
     obs = {}
     traj = "Task:\n" + instruction
@@ -228,7 +230,7 @@ def run_agent(
         reason = stop_reason(pyautogui.position)
         if reason:
             print(f"\n⛔ Stopped: {reason}.")
-            break
+            return "stopped"
         # Get screen shot using pyautogui
         screenshot = pyautogui.screenshot()
         screenshot = screenshot.resize((scaled_width, scaled_height), Image.LANCZOS)
@@ -253,19 +255,22 @@ def run_agent(
             info, code = agent.predict(instruction=instruction, observation=obs)
         except SubscriptionStop as stop:
             print(f"\n⛔ Stopped: {stop}")
-            break
+            return "stopped"
 
         if "done" in code[0].lower() or "fail" in code[0].lower():
-            if platform.system() == "Darwin":
+            outcome = "fail" if "fail" in code[0].lower() else "done"
+            label = "Task Completed" if outcome == "done" else "Task could not be completed"
+            if quiet_done:
+                print(f"\n🏁 {label}.")
+            elif platform.system() == "Darwin":
                 os.system(
-                    f'osascript -e \'display dialog "Task Completed" with title "OpenACI Agent" buttons "OK" default button "OK"\''
+                    f'osascript -e \'display dialog "{label}" with title "OpenACI Agent" buttons "OK" default button "OK"\''
                 )
             elif platform.system() == "Linux":
                 os.system(
-                    f'zenity --info --title="OpenACI Agent" --text="Task Completed" --width=200 --height=100'
+                    f'zenity --info --title="OpenACI Agent" --text="{label}" --width=200 --height=100'
                 )
-
-            break
+            return outcome
 
         if "next" in code[0].lower():
             continue
@@ -287,12 +292,12 @@ def run_agent(
             reason = stop_reason(pyautogui.position)
             if reason:
                 print(f"\n⛔ Stopped: {reason}.")
-                break
+                return "stopped"
 
             # Ask for permission before executing
             if needs_approval(approval, code[0]) and not show_permission_dialog(describe_action(info, code[0])):
                 print("🚫 Action declined; stopping this task.")
-                break
+                return "stopped"
 
             # Keys with no click first go to the front app. If that is the
             # Terminal running Agent S, the shell would receive them (and run
@@ -305,10 +310,10 @@ def run_agent(
                 exec(code[0])
             except SubscriptionStop as stop:  # grounding calls happen inside exec'd code
                 print(f"\n⛔ Stopped: {stop}")
-                break
+                return "stopped"
             except pyautogui.FailSafeException:
                 print("\n⛔ Stopped: mouse moved to a screen corner.")
-                break
+                return "stopped"
             time.sleep(1.0)
 
             # Update task and subtask trajectories
@@ -319,6 +324,8 @@ def run_agent(
                     + "\n\n----------------------\n\nPlan:\n"
                     + info["executor_plan"]
                 )
+    print(f"\n⏹  Ran out of steps ({max_steps}) before finishing.")
+    return "out_of_steps"
 
 
 def main():
@@ -441,6 +448,11 @@ def main():
         help="Same as --approval never",
     )
     parser.add_argument(
+        "--quiet_done",
+        action="store_true",
+        help="Print the result instead of showing a 'Task Completed' dialog (for unattended runs)",
+    )
+    parser.add_argument(
         "--task",
         type=str,
         help="The task instruction for Agent-S3 to perform.",
@@ -520,7 +532,9 @@ def main():
                     capture_output=True,
                 )
         try:
-            run_agent(agent, instruction, scaled_width, scaled_height, args.max_steps, approval)
+            outcome = run_agent(
+                agent, instruction, scaled_width, scaled_height, args.max_steps, approval, args.quiet_done
+            )
         finally:
             finish_run()
             discard_typed_input()
@@ -530,6 +544,7 @@ def main():
                 f"Claude calls this task: {used['calls']} of {used['max_calls']}; "
                 f"client-side API-price estimate ${used['est_cost_usd']:.2f} (not a bill; usage counts against your Max limits)"
             )
+        return outcome
 
     # Initialize environment based on user preference
     local_env = None
@@ -561,8 +576,8 @@ def main():
     # handle query from command line
     if isinstance(task, str) and task.strip():
         agent.reset()
-        run_task(task)
-        return
+        # Exit status for callers such as mac_app/watch_claude.py: 0 only if the agent called done().
+        sys.exit(0 if run_task(task) == "done" else 1)
 
     while True:
         query = input("Query: ")
