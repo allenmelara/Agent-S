@@ -162,3 +162,7 @@ cython_debug/
 #.idea/
 logs/
 .DS_Store
+# Agent S local memory / knowledge base (may contain personal task history)
+kb_s1/
+kb_s2/
+kb*/
