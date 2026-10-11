@@ -75,6 +75,12 @@ class Worker(BaseModule):
         sys_prompt = PROCEDURAL_MEMORY.construct_simple_worker_procedural_memory(
             type(self.grounding_agent), skipped_actions=skipped_actions
         ).replace("CURRENT_OS", self.platform)
+        if self.platform == "darwin":
+            # The OSWorld benchmark VM's sudo password means nothing on a real Mac.
+            sys_prompt = sys_prompt.replace(
+                "7. My computer's password is 'osworld-public-evaluation', feel free to use it when you need sudo rights.",
+                "7. Never use sudo or ask for administrator rights.",
+            )
 
         self.generator_agent = self._create_agent(sys_prompt)
         self.reflection_agent = self._create_agent(

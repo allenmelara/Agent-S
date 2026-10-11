@@ -456,16 +456,23 @@ class OSWorldACI(ACI):
             overwrite:bool, Assign it to True if the text should overwrite the existing text, otherwise assign it to False. Using this argument clears all text in an element.
             enter:bool, Assign it to True if the enter key should be pressed after typing the text, otherwise assign it to False.
         """
+        # Check if text contains Unicode characters that pyautogui.write() can't handle
+        has_unicode = any(ord(char) > 127 for char in text)
+
         command = "import pyautogui; "
-        command += (
-            "\ntry:\n"
-            "    import pyperclip\n"
-            "except ImportError:\n"
-            "    import subprocess\n"
-            "    subprocess.run('echo \"osworld-public-evaluation\" | sudo -S apt-get install -y xclip xsel', shell=True, check=True)\n"
-            "    subprocess.check_call([subprocess.sys.executable, '-m', 'pip', 'install', 'pyperclip'])\n"
-            "    import pyperclip\n\n"
-        )
+        if has_unicode and self.platform == "darwin":
+            # pyperclip uses macOS's own pbcopy; no install fallback, no sudo.
+            command += "import pyperclip; "
+        elif has_unicode:
+            command += (
+                "\ntry:\n"
+                "    import pyperclip\n"
+                "except ImportError:\n"
+                "    import subprocess\n"
+                "    subprocess.run('echo \"osworld-public-evaluation\" | sudo -S apt-get install -y xclip xsel', shell=True, check=True)\n"
+                "    subprocess.check_call([subprocess.sys.executable, '-m', 'pip', 'install', 'pyperclip'])\n"
+                "    import pyperclip\n\n"
+            )
 
         if element_description is not None:
             coords1 = self.generate_coords(element_description, self.obs)
@@ -477,9 +484,6 @@ class OSWorldACI(ACI):
                 f"pyautogui.hotkey({repr('command' if self.platform == 'darwin' else 'ctrl')}, 'a'); "
                 "pyautogui.press('backspace'); "
             )
-
-        # Check if text contains Unicode characters that pyautogui.write() can't handle
-        has_unicode = any(ord(char) > 127 for char in text)
 
         if has_unicode:
             # Use clipboard method for Unicode characters

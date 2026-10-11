@@ -427,6 +427,39 @@ class TestApprovalAndStop(unittest.TestCase):
             self.assertIsNone(rc.stop_reason(broken))
 
 
+class TestMacTyping(GuardBypass):
+    def make_aci(self, platform):
+        from gui_agents.s3.agents.grounding import OSWorldACI
+
+        params = {"engine_type": "claude_subscription", "model": None, "persistent": False}
+        ground = dict(params, grounding_width=100, grounding_height=100)
+        return OSWorldACI(env=None, platform=platform, engine_params_for_generation=params,
+                          engine_params_for_grounding=ground, width=100, height=100)
+
+    def test_mac_typing_has_no_shell_or_sudo(self):
+        from gui_agents.s3.utils.action_summary import needs_approval
+
+        aci = self.make_aci("darwin")
+        for text in ("12*7=", "café ☕"):
+            code = aci.type(text=text)
+            self.assertNotIn("subprocess", code)
+            self.assertNotIn("sudo", code)
+            self.assertFalse(needs_approval("risky", code))
+        self.assertNotIn("pyperclip", aci.type(text="12*7="))
+        self.assertIn("import pyperclip; ", aci.type(text="café"))
+
+    def test_linux_unicode_keeps_upstream_fallback(self):
+        self.assertIn("apt-get", self.make_aci("linux").type(text="café"))
+
+    def test_mac_prompt_drops_benchmark_password(self):
+        from gui_agents.s3.agents.worker import Worker
+
+        params = {"engine_type": "claude_subscription", "model": None, "persistent": False}
+        prompt = Worker(params, self.make_aci("darwin"), platform="darwin").generator_agent.system_prompt
+        self.assertNotIn("osworld-public-evaluation", prompt)
+        self.assertIn("Never use sudo", prompt)
+
+
 class TestGuard(unittest.TestCase):
     def setUp(self):
         cs._guard_passed = False
