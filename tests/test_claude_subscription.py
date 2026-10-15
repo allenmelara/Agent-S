@@ -504,11 +504,48 @@ class TestMacKeys(unittest.TestCase):
         q.CGEventPost = lambda tap, event: events.append(event)
         return q
 
+    def test_edit_menu_items(self):
+        from gui_agents.s3.utils.mac_keys import edit_menu_item
+
+        self.assertEqual(edit_menu_item(["cmd", "v"]), "Paste")
+        self.assertEqual(edit_menu_item(["command", "c"]), "Copy")
+        self.assertEqual(edit_menu_item(["Command", "A"]), "Select All")
+        self.assertIsNone(edit_menu_item(["command", "shift", "v"]))  # other modifiers: keys
+        self.assertIsNone(edit_menu_item(["command", "s"]))
+        self.assertIsNone(edit_menu_item(["ctrl", "v"]))
+
+    def test_paste_uses_the_edit_menu(self):
+        from gui_agents.s3.utils import mac_keys
+
+        events, clicked = [], []
+        with patch.dict("sys.modules", {"Quartz": self.fake_quartz(events)}), patch.object(
+            mac_keys, "click_edit_menu", lambda item: clicked.append(item) or True
+        ), patch.object(mac_keys.time, "sleep"):
+            mac_keys.press_combo(["cmd", "v"])
+            mac_keys.press_combo(["command", "s"])  # not an Edit menu shortcut
+        self.assertEqual(clicked, ["Paste"])
+        self.assertEqual([e["code"] for e in events], [55, 1, 1, 55])  # only Command+S as keys
+
+    def test_menu_script_targets_front_app(self):
+        from gui_agents.s3.utils import mac_keys
+
+        scripts = []
+
+        class Result:
+            returncode = 0
+
+        with patch.object(mac_keys.subprocess, "run", lambda cmd, **kw: scripts.append(cmd[2]) or Result()):
+            self.assertTrue(mac_keys.click_edit_menu("Paste"))
+        self.assertIn("whose frontmost is true", scripts[0])
+        self.assertIn('click menu item "Paste" of menu "Edit"', scripts[0])
+
     def test_command_v_carries_the_command_flag(self):
         from gui_agents.s3.utils import mac_keys
 
         events = []
-        with patch.dict("sys.modules", {"Quartz": self.fake_quartz(events)}), patch.object(mac_keys.time, "sleep"):
+        with patch.dict("sys.modules", {"Quartz": self.fake_quartz(events)}), patch.object(
+            mac_keys, "click_edit_menu", return_value=False  # menu click failed: fall back to keys
+        ), patch.object(mac_keys.time, "sleep"):
             mac_keys.press_combo(["cmd", "v"])
         cmd = 1 << 20
         self.assertEqual(

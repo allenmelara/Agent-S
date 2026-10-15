@@ -1,11 +1,19 @@
 """Reliable key combinations on macOS.
 
 pyautogui.hotkey('command', 'v') sends the modifier and the key as separate,
-very fast events; apps often see a plain "v" with no Command flag. Here each
-key event carries the modifier flags itself (Quartz CGEvent), which is what
-macOS apps check.
+very fast events; apps often see a plain "v" with no Command flag.
+
+press_combo() avoids that in two ways:
+- Copy, paste, cut, select all and undo click the front app's own Edit menu
+  item (via System Events), so no modifier key is involved at all.
+- Any other combination posts Quartz key events that carry the modifier
+  flags themselves, which is what macOS apps check. This is also the
+  fallback if the menu click fails.
+
+mac_app/test_paste.py checks each method on your Mac.
 """
 
+import subprocess
 import time
 
 # ANSI US keyboard virtual key codes.
@@ -32,6 +40,9 @@ MODIFIERS = {
     "control": (59, "kCGEventFlagMaskControl"),
 }
 
+# Command+<key> -> Edit menu item, clicked instead of pressing keys.
+EDIT_MENU = {"v": "Paste", "c": "Copy", "x": "Cut", "a": "Select All", "z": "Undo"}
+
 
 def split_combo(keys):
     """(modifiers, other keys), lower-cased; raises KeyError for unknown keys."""
@@ -43,16 +54,38 @@ def split_combo(keys):
     return mods, others
 
 
-def press_combo(keys, hold=0.03):
-    """Press keys together, e.g. press_combo(['command', 'v'])."""
+def edit_menu_item(keys):
+    """The Edit menu item for Command+<key> (no other modifiers), or None."""
+    keys = [str(k).lower() for k in keys]
+    mods = {MODIFIERS[k][1] for k in keys if k in MODIFIERS}
+    others = [k for k in keys if k not in MODIFIERS]
+    if mods == {"kCGEventFlagMaskCommand"} and len(others) == 1:
+        return EDIT_MENU.get(others[0])
+    return None
+
+
+def click_edit_menu(item: str) -> bool:
+    """Click Edit > item in the front app. True if System Events reported success."""
+    script = (
+        'tell application "System Events"\n'
+        "  set frontApp to first application process whose frontmost is true\n"
+        f'  click menu item "{item}" of menu "Edit" of menu bar 1 of frontApp\n'
+        "end tell"
+    )
+    try:
+        result = subprocess.run(["osascript", "-e", script], capture_output=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def quartz_combo(keys, hold=0.03) -> bool:
+    """Press keys with Quartz events carrying the modifier flags. False if unavailable."""
     try:
         mods, others = split_combo(keys)
         import Quartz
     except (KeyError, ImportError):
-        import pyautogui
-
-        pyautogui.hotkey(*keys, interval=0.05)
-        return
+        return False
 
     source = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
 
@@ -74,3 +107,17 @@ def press_combo(keys, hold=0.03):
         code, mask = MODIFIERS[m]
         flags &= ~getattr(Quartz, mask)
         post(code, False, flags)
+    return True
+
+
+def press_combo(keys):
+    """Press keys together, e.g. press_combo(['command', 'v'])."""
+    item = edit_menu_item(keys)
+    if item and click_edit_menu(item):
+        time.sleep(0.2)
+        return
+    if quartz_combo(keys):
+        return
+    import pyautogui
+
+    pyautogui.hotkey(*keys, interval=0.05)
