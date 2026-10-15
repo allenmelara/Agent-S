@@ -200,6 +200,11 @@ def main() -> None:
                 cancel="Cancel",
                 dimensions=(360, 60),
             )
+            # A menu-bar app is never the frontmost app, so without this the
+            # dialog shows but keystrokes keep going to the app you were in.
+            from AppKit import NSApplication
+
+            NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
             response = window.run()
             task = response.text.strip()
             if response.clicked and task:
